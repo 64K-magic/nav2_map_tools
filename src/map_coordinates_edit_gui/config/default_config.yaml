@@ -1,0 +1,20 @@
+# Default configuration for map_coordinates_edit_gui
+#
+# GPS demo (Sonoma Raceway / nav2_gps_waypoint_follower_demo):
+#   World spherical coords & typical first /gps/fix ≈ 38.161479, -122.454630
+#   Origin Lat/Lon in the GUI must match navsat_transform datum so keepout
+#   meters align with the robot map frame.
+
+# Default center = Sonoma Raceway (Gazebo GPS demo)
+default_center_lat: 38.161479
+default_center_lon: -122.454630
+
+# Default zoom level for tile map
+default_zoom: 18
+
+# Esri World Imagery — works worldwide (including Sonoma, CA).
+# Mapviz uses the same style of XYZ tiles; GUI substitutes {level}/{x}/{y}.
+default_tile_url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{level}/{y}/{x}"
+
+# TianDiTu (China-oriented). Prefer for domestic maps; may be poor/blank over Sonoma.
+# default_tile_url: "https://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={level}&TILEROW={y}&TILECOL={x}&tk=3a4624a82f97a6f10db0da558390e530"

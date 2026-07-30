@@ -1,0 +1,857 @@
+#include <QApplication>
+#include <QGraphicsScene>
+#include <QGraphicsView>
+#include <QGraphicsPixmapItem>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QWidget>
+#include <QLabel>
+#include <QPushButton>
+#include <QFileDialog>
+#include <QComboBox>
+#include <QLineEdit>
+#include <QGroupBox>
+#include <QRadioButton>
+#include <QButtonGroup>
+#include <QPainter>
+#include <QMouseEvent>
+#include <QKeyEvent>
+#include <QPixmap>
+#include <QImage>
+#include <QPointF>
+#include <QPolygonF>
+#include <QPen>
+#include <QBrush>
+#include <QColor>
+#include <QMessageBox>
+#include <QTimer>
+
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/pose.hpp>
+#include <memory>
+#include <vector>
+#include <cmath>
+
+#include "map_coordinates_edit_gui/qnode.hpp"
+
+// Custom graphics item for drawing shapes
+class ShapeItem : public QGraphicsItem {
+public:
+    enum ShapeType { Line, Rectangle, Circle, Polygon };
+
+    ShapeItem(ShapeType type, const QPolygonF& points = QPolygonF())
+        : type_(type), points_(points), finished_(false) {}
+
+    void addPoint(const QPointF& point) {
+        points_.append(point);
+        if (type_ == Line && points_.size() >= 2) finished_ = true;
+        update();
+    }
+
+    void finish() { finished_ = true; update(); }
+
+    bool isFinished() const { return finished_; }
+
+    QRectF boundingRect() const override {
+        if (points_.isEmpty()) return QRectF();
+        return points_.boundingRect().adjusted(-5, -5, 5, 5);
+    }
+
+    void paint(QPainter* painter, const QStyleOptionGraphicsItem*, QWidget*) override {
+        painter->setPen(QPen(Qt::red, 2));
+        painter->setBrush(QBrush(QColor(255, 0, 0, 50)));
+
+        if (type_ == Line && points_.size() >= 2) {
+            painter->drawLine(points_[0], points_[1]);
+        } else if (type_ == Rectangle && points_.size() >= 2) {
+            QRectF rect(points_[0], points_[1]);
+            painter->drawRect(rect);
+        } else if (type_ == Circle && points_.size() >= 2) {
+            QPointF center = points_[0];
+            double radius = QLineF(points_[0], points_[1]).length();
+            painter->drawEllipse(center, radius, radius);
+        } else if (type_ == Polygon && points_.size() >= 3) {
+            painter->drawPolygon(points_);
+        }
+
+        // Draw points
+        painter->setPen(QPen(Qt::blue, 3));
+        painter->setBrush(QBrush(Qt::blue));
+        for (const QPointF& point : points_) {
+            painter->drawEllipse(point, 3, 3);
+        }
+    }
+
+private:
+    ShapeType type_;
+    QPolygonF points_;
+    bool finished_;
+};
+
+class MapGraphicsView : public QGraphicsView {
+    Q_OBJECT
+
+public:
+    MapGraphicsView(QGraphicsScene* scene, QWidget* parent = nullptr)
+        : QGraphicsView(scene, parent), currentShape_(nullptr), drawingMode_(false) {
+        setMouseTracking(true);
+        setRenderHint(QPainter::Antialiasing);
+    }
+
+    void setDrawingMode(bool enabled, ShapeItem::ShapeType type = ShapeItem::Line) {
+        drawingMode_ = enabled;
+        currentShapeType_ = type;
+        if (!enabled && currentShape_) {
+            currentShape_->finish();
+            currentShape_ = nullptr;
+        }
+    }
+
+    void clearShapes() {
+        QList<QGraphicsItem*> items = scene()->items();
+        for (QGraphicsItem* item : items) {
+            if (dynamic_cast<ShapeItem*>(item)) {
+                scene()->removeItem(item);
+                delete item;
+            }
+        }
+    }
+
+    std::vector<QPolygonF> getShapes() const {
+        std::vector<QPolygonF> shapes;
+        QList<QGraphicsItem*> items = scene()->items();
+        for (QGraphicsItem* item : items) {
+            ShapeItem* shape = dynamic_cast<ShapeItem*>(item);
+            if (shape && shape->isFinished()) {
+                shapes.push_back(QPolygonF()); // Placeholder for shape data
+            }
+        }
+        return shapes;
+    }
+
+signals:
+    void shapeFinished();
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override {
+        if (drawingMode_ && event->button() == Qt::LeftButton) {
+            QPointF scenePos = mapToScene(event->pos());
+            if (!currentShape_) {
+                currentShape_ = new ShapeItem(currentShapeType_);
+                scene()->addItem(currentShape_);
+            }
+            currentShape_->addPoint(scenePos);
+            if (currentShape_->isFinished()) {
+                emit shapeFinished();
+                currentShape_ = nullptr;
+            }
+        }
+        QGraphicsView::mousePressEvent(event);
+    }
+
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Escape && currentShape_) {
+            scene()->removeItem(currentShape_);
+            delete currentShape_;
+            currentShape_ = nullptr;
+        }
+        QGraphicsView::keyPressEvent(event);
+    }
+
+private:
+    ShapeItem* currentShape_;
+    bool drawingMode_;
+    ShapeItem::ShapeType currentShapeType_;
+};
+
+class MainWindowWrapper : public QWidget {
+    Q_OBJECT
+
+public:
+    MainWindowWrapper(QWidget *parent = nullptr) : QWidget(parent), qnode_(new QNode(this)) {
+        setupUI();
+        setupConnections();
+        qnode_->start();
+    }
+
+    ~MainWindowWrapper() {
+        delete qnode_;
+    }
+
+public slots:
+    void onGpsUpdate(double lat, double lon) {
+        gpsLatEdit_->setText(QString::number(lat, 'f', 8));
+        gpsLonEdit_->setText(QString::number(lon, 'f', 8));
+    }
+
+    void onShapeFinished() {
+        updateProhibitionAreas();
+    }
+
+private slots:
+    void loadMap() {
+        QString fileName = QFileDialog::getOpenFileName(this, "Load Map", "", "Images (*.png *.jpg *.pgm *.tif)");
+        if (!fileName.isEmpty()) {
+            QPixmap pixmap(fileName);
+            if (!pixmap.isNull()) {
+                mapItem_->setPixmap(pixmap);
+                mapView_->fitInView(mapItem_, Qt::KeepAspectRatio);
+                mapView_->centerOn(mapItem_);
+            }
+        }
+    }
+
+    void startDrawing() {
+        ShapeItem::ShapeType type = ShapeItem::Line;
+        if (lineRadio_->isChecked()) type = ShapeItem::Line;
+        else if (rectRadio_->isChecked()) type = ShapeItem::Rectangle;
+        else if (circleRadio_->isChecked()) type = ShapeItem::Circle;
+        else if (polygonRadio_->isChecked()) type = ShapeItem::Polygon;
+
+        mapView_->setDrawingMode(true, type);
+    }
+
+    void stopDrawing() {
+        mapView_->setDrawingMode(false);
+    }
+
+    void clearShapes() {
+        mapView_->clearShapes();
+        updateProhibitionAreas();
+    }
+
+    void publishAreas() {
+        if (prohibitionAreas_.poses.empty()) {
+            QMessageBox::information(this, "No Areas", "No prohibition areas to publish.");
+            return;
+        }
+        qnode_->publishProhibitionAreas(prohibitionAreas_);
+        QMessageBox::information(this, "Published", "Prohibition areas published to topic.");
+    }
+
+    void calibrateGps() {
+        // Simple calibration - in real implementation, would use more sophisticated methods
+        QMessageBox::information(this, "GPS Calibration", "GPS calibration feature would be implemented here.");
+    }
+
+private:
+    void setupUI() {
+        QVBoxLayout* mainLayout = new QVBoxLayout(this);
+
+        // Map view
+        scene_ = new QGraphicsScene(this);
+        mapItem_ = new QGraphicsPixmapItem();
+        scene_->addItem(mapItem_);
+
+        mapView_ = new MapGraphicsView(scene_, this);
+        mainLayout->addWidget(mapView_);
+
+        // Control panel
+        QHBoxLayout* controlLayout = new QHBoxLayout();
+
+        // Map controls
+        QGroupBox* mapGroup = new QGroupBox("Map");
+        QVBoxLayout* mapLayout = new QVBoxLayout(mapGroup);
+        QPushButton* loadBtn = new QPushButton("Load Map");
+        mapLayout->addWidget(loadBtn);
+        controlLayout->addWidget(mapGroup);
+
+        // Drawing tools
+        QGroupBox* drawGroup = new QGroupBox("Drawing Tools");
+        QVBoxLayout* drawLayout = new QVBoxLayout(drawGroup);
+
+        QButtonGroup* shapeGroup = new QButtonGroup(this);
+        lineRadio_ = new QRadioButton("Line");
+        rectRadio_ = new QRadioButton("Rectangle");
+        circleRadio_ = new QRadioButton("Circle");
+        polygonRadio_ = new QRadioButton("Polygon");
+        lineRadio_->setChecked(true);
+
+        shapeGroup->addButton(lineRadio_);
+        shapeGroup->addButton(rectRadio_);
+        shapeGroup->addButton(circleRadio_);
+        shapeGroup->addButton(polygonRadio_);
+
+        drawLayout->addWidget(lineRadio_);
+        drawLayout->addWidget(rectRadio_);
+        drawLayout->addWidget(circleRadio_);
+        drawLayout->addWidget(polygonRadio_);
+
+        QPushButton* startDrawBtn = new QPushButton("Start Drawing");
+        QPushButton* stopDrawBtn = new QPushButton("Stop Drawing");
+        QPushButton* clearBtn = new QPushButton("Clear Shapes");
+
+        drawLayout->addWidget(startDrawBtn);
+        drawLayout->addWidget(stopDrawBtn);
+        drawLayout->addWidget(clearBtn);
+
+        controlLayout->addWidget(drawGroup);
+
+        // GPS controls
+        QGroupBox* gpsGroup = new QGroupBox("GPS");
+        QVBoxLayout* gpsLayout = new QVBoxLayout(gpsGroup);
+
+        QHBoxLayout* latLayout = new QHBoxLayout();
+        latLayout->addWidget(new QLabel("Lat:"));
+        gpsLatEdit_ = new QLineEdit("0.0");
+        latLayout->addWidget(gpsLatEdit_);
+        gpsLayout->addLayout(latLayout);
+
+        QHBoxLayout* lonLayout = new QHBoxLayout();
+        lonLayout->addWidget(new QLabel("Lon:"));
+        gpsLonEdit_ = new QLineEdit("0.0");
+        lonLayout->addWidget(gpsLonEdit_);
+        gpsLayout->addLayout(lonLayout);
+
+        QPushButton* calibrateBtn = new QPushButton("Calibrate GPS");
+        gpsLayout->addWidget(calibrateBtn);
+
+        controlLayout->addWidget(gpsGroup);
+
+        // Publish controls
+        QGroupBox* publishGroup = new QGroupBox("Publish");
+        QVBoxLayout* publishLayout = new QVBoxLayout(publishGroup);
+        QPushButton* publishBtn = new QPushButton("Publish Prohibition Areas");
+        publishLayout->addWidget(publishBtn);
+        controlLayout->addWidget(publishGroup);
+
+        controlLayout->addStretch();
+        mainLayout->addLayout(controlLayout);
+    }
+
+    void setupConnections() {
+        connect(findChild<QPushButton*>("Load Map"), &QPushButton::clicked, this, &MainWindowWrapper::loadMap);
+        connect(findChild<QPushButton*>("Start Drawing"), &QPushButton::clicked, this, &MainWindowWrapper::startDrawing);
+        connect(findChild<QPushButton*>("Stop Drawing"), &QPushButton::clicked, this, &MainWindowWrapper::stopDrawing);
+        connect(findChild<QPushButton*>("Clear Shapes"), &QPushButton::clicked, this, &MainWindowWrapper::clearShapes);
+        connect(findChild<QPushButton*>("Publish Prohibition Areas"), &QPushButton::clicked, this, &MainWindowWrapper::publishAreas);
+        connect(findChild<QPushButton*>("Calibrate GPS"), &QPushButton::clicked, this, &MainWindowWrapper::calibrateGps);
+
+        connect(mapView_, &MapGraphicsView::shapeFinished, this, &MainWindowWrapper::onShapeFinished);
+        connect(qnode_, &QNode::gpsUpdated, this, &MainWindowWrapper::onGpsUpdate);
+    }
+
+    void updateProhibitionAreas() {
+        // Convert shapes to PoseArray
+        prohibitionAreas_.poses.clear();
+        auto shapes = mapView_->getShapes();
+
+        for (const auto& shape : shapes) {
+            for (const QPointF& point : shape) {
+                geometry_msgs::msg::Pose pose;
+                pose.position.x = point.x();
+                pose.position.y = point.y();
+                pose.position.z = 0.0;
+                prohibitionAreas_.poses.push_back(pose);
+            }
+        }
+    }
+
+    QGraphicsScene* scene_;
+    QGraphicsPixmapItem* mapItem_;
+    MapGraphicsView* mapView_;
+    QLineEdit* gpsLatEdit_;
+    QLineEdit* gpsLonEdit_;
+    QRadioButton* lineRadio_;
+    QRadioButton* rectRadio_;
+    QRadioButton* circleRadio_;
+    QRadioButton* polygonRadio_;
+
+    QNode* qnode_;
+    geometry_msgs::msg::PoseArray prohibitionAreas_;
+};
+
+int main(int argc, char *argv[]) {
+    rclcpp::init(argc, argv);
+    QApplication app(argc, argv);
+
+    MainWindowWrapper window;
+    window.show();
+
+    int result = app.exec();
+    rclcpp::shutdown();
+    return result;
+}
+
+#include "main.moc"
+    Q_OBJECT
+
+public:
+    MainWindowWrapper(QWidget *parent = nullptr) : QWidget(parent) {
+        // layout + controls
+        QVBoxLayout *layout = new QVBoxLayout(this);
+        // first row: mode label, save and reset buttons each on their own line
+        QVBoxLayout *ctrlContainer = new QVBoxLayout();
+        QHBoxLayout *topRow = new QHBoxLayout();
+        mode_label = new QLabel("Mode: -");
+        topRow->addWidget(mode_label);
+        
+        topRow->addStretch();
+        ctrlContainer->addLayout(topRow);
+
+        // second row: series toggle button and checkbox widget
+        QHBoxLayout *bottomRow = new QHBoxLayout();
+        QPushButton *toggle_btn = new QPushButton("Series");
+        bottomRow->addWidget(save_csv_btn = new QPushButton("Save Image"));
+        bottomRow->addWidget(reset_zoom_btn = new QPushButton("Reset Zoom"));
+        bottomRow->addWidget(toggle_btn);
+        // checkboxes for series visibility; start hidden. wrap layout in a QWidget because
+        // layouts don't have setVisible/isVisible methods.
+        QHBoxLayout *toggleRow = new QHBoxLayout();
+        QWidget *toggleWidget = new QWidget();
+        toggleWidget->setLayout(toggleRow);
+        toggleWidget->setVisible(false);
+        bottomRow->addWidget(toggleWidget);
+        bottomRow->addStretch();
+        ctrlContainer->addLayout(bottomRow);
+
+        layout->addLayout(ctrlContainer);
+
+        // connection to toggle visibility of the checkbox widget
+        QObject::connect(toggle_btn, &QPushButton::clicked, [toggleWidget](){
+            toggleWidget->setVisible(!toggleWidget->isVisible());
+        });
+
+        // linear velocity chart
+        chart = new QChart();
+        chart->setTitle("uwb/vision/cmd_vel (linear.x) over time");
+        cmd_series = new QLineSeries(); cmd_series->setName("cmd_linear_x");
+        uwb_cmd_series = new QLineSeries(); uwb_cmd_series->setName("/uwb/cmd_vel");
+        vision_cmd_series = new QLineSeries(); vision_cmd_series->setName("/vision/cmd_vel");
+        // angle series will be added to angular chart (raw angles are shown in the raw charts)
+        chart->addSeries(cmd_series);
+        chart->addSeries(uwb_cmd_series);
+        chart->addSeries(vision_cmd_series);
+        axisX = new QValueAxis(); axisX->setLabelFormat("%.1f"); axisX->setTitleText("time(s)");
+        axisY = new QValueAxis(); axisY->setLabelFormat("%.2f"); axisY->setTitleText("value");
+        chart->addAxis(axisX, Qt::AlignBottom);
+        chart->addAxis(axisY, Qt::AlignLeft);
+        // uwb/vision distance series removed from main chart; only cmd series attach
+        cmd_series->attachAxis(axisX); cmd_series->attachAxis(axisY);
+        uwb_cmd_series->attachAxis(axisX); uwb_cmd_series->attachAxis(axisY);
+        vision_cmd_series->attachAxis(axisX); vision_cmd_series->attachAxis(axisY);
+        chartView = new QChartView(chart);
+        chartView->setRenderHint(QPainter::Antialiasing);
+
+        // combine raw distance data into one chart
+        dist_chart = new QChart();
+        dist_chart->setTitle("raw distance (/uwb/data & /camera/vision)");
+        uwb_data_distance_series = new QLineSeries(); uwb_data_distance_series->setName("uwb_dist");
+        camera_distance_series = new QLineSeries(); camera_distance_series->setName("cam_dist");
+        dist_chart->addSeries(uwb_data_distance_series);
+        dist_chart->addSeries(camera_distance_series);
+        dist_axisX = new QValueAxis(); dist_axisX->setLabelFormat("%.1f"); dist_axisX->setTitleText("time(s)");
+        dist_axisY = new QValueAxis(); dist_axisY->setTitleText("distance");
+        dist_chart->addAxis(dist_axisX, Qt::AlignBottom);
+        dist_chart->addAxis(dist_axisY, Qt::AlignLeft);
+        uwb_data_distance_series->attachAxis(dist_axisX); uwb_data_distance_series->attachAxis(dist_axisY);
+        camera_distance_series->attachAxis(dist_axisX); camera_distance_series->attachAxis(dist_axisY);
+        dist_view = new QChartView(dist_chart);
+        dist_view->setRenderHint(QPainter::Antialiasing);
+
+        // combine raw angle data into one chart
+        ang_raw_chart = new QChart();
+        ang_raw_chart->setTitle("raw angle (/uwb/data & /camera/vision)");
+        uwb_data_angle_series = new QLineSeries(); uwb_data_angle_series->setName("uwb_ang");
+        camera_angle_series = new QLineSeries(); camera_angle_series->setName("cam_ang");
+        ang_raw_chart->addSeries(uwb_data_angle_series);
+        ang_raw_chart->addSeries(camera_angle_series);
+        ang_axisX = new QValueAxis(); ang_axisX->setLabelFormat("%.1f"); ang_axisX->setTitleText("time(s)");
+        ang_axisY = new QValueAxis(); ang_axisY->setTitleText("angle");
+        ang_raw_chart->addAxis(ang_axisX, Qt::AlignBottom);
+        ang_raw_chart->addAxis(ang_axisY, Qt::AlignLeft);
+        uwb_data_angle_series->attachAxis(ang_axisX); uwb_data_angle_series->attachAxis(ang_axisY);
+        camera_angle_series->attachAxis(ang_axisX); camera_angle_series->attachAxis(ang_axisY);
+        ang_raw_view = new QChartView(ang_raw_chart);
+        ang_raw_view->setRenderHint(QPainter::Antialiasing);
+
+        // angular velocity chart (only angular velocities; raw angles moved to raw charts)
+        ang_chart = new QChart();
+        ang_chart->setTitle("angular.z velocities");
+        cmd_ang_series = new QLineSeries(); cmd_ang_series->setName("cmd_angular_z");
+        uwb_cmd_ang_series = new QLineSeries(); uwb_cmd_ang_series->setName("/uwb/cmd_vel_ang");
+        vision_cmd_ang_series = new QLineSeries(); vision_cmd_ang_series->setName("/vision/cmd_vel_ang");
+        ang_chart->addSeries(cmd_ang_series);
+        ang_chart->addSeries(uwb_cmd_ang_series);
+        ang_chart->addSeries(vision_cmd_ang_series);
+        axisX2 = new QValueAxis(); axisX2->setLabelFormat("%.1f"); axisX2->setTitleText("time(s)");
+        axisY2 = new QValueAxis(); axisY2->setLabelFormat("%.2f"); axisY2->setTitleText("ang vel");
+        ang_chart->addAxis(axisX2, Qt::AlignBottom);
+        ang_chart->addAxis(axisY2, Qt::AlignLeft);
+        cmd_ang_series->attachAxis(axisX2); cmd_ang_series->attachAxis(axisY2);
+        uwb_cmd_ang_series->attachAxis(axisX2); uwb_cmd_ang_series->attachAxis(axisY2);
+        vision_cmd_ang_series->attachAxis(axisX2); vision_cmd_ang_series->attachAxis(axisY2);
+        QChartView *angView = new QChartView(ang_chart);
+        angView->setRenderHint(QPainter::Antialiasing);
+        // arrange charts into 2x2 grid: row1 = main + angular, row2 = uwb raw + camera raw
+        QHBoxLayout *row1 = new QHBoxLayout();
+        row1->addWidget(chartView);
+        row1->addWidget(angView);
+        layout->addLayout(row1);
+
+        QHBoxLayout *row2 = new QHBoxLayout();
+        row2->addWidget(dist_view);
+        row2->addWidget(ang_raw_view);
+        layout->addLayout(row2);
+
+        // create visibility toggles for linear chart series (only cmd and cmd sources)
+        createToggle(toggleRow, "当前线速度", cmd_series);
+        createToggle(toggleRow, "/uwb/cmd", uwb_cmd_series);
+        createToggle(toggleRow, "/vision/cmd", vision_cmd_series);
+        // toggles for angular chart (only angular velocity series)
+        createToggle(toggleRow, "当前角速度", cmd_ang_series);
+        createToggle(toggleRow, "/uwb/cmd_ang", uwb_cmd_ang_series);
+        createToggle(toggleRow, "/vision/cmd_ang", vision_cmd_ang_series);
+        // toggles for raw data charts
+        createToggle(toggleRow, "uwb输入距离", uwb_data_distance_series);
+        createToggle(toggleRow, "cam输入距离", camera_distance_series);
+        createToggle(toggleRow, "uwb输入角度", uwb_data_angle_series);
+        createToggle(toggleRow, "cam输入角度", camera_angle_series);
+        
+
+        start_time = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        max_points = 500;
+        // fixed x-axis window (seconds)
+        x_window = 10.0;
+        // we'll use real timestamps (seconds since start_time) as X values
+        axisX->setRange(start_time, start_time + x_window);
+        axisX2->setRange(start_time, start_time + x_window);
+        dist_axisX->setRange(start_time, start_time + x_window);
+        ang_axisX->setRange(start_time, start_time + x_window);
+    }
+
+public slots:
+    static void pruneSeriesBefore(QLineSeries *s, double cutoff) {
+        if (!s) return;
+        QVector<QPointF> kept;
+        kept.reserve(s->count());
+        for (int i = 0; i < s->count(); ++i) {
+            QPointF p = s->at(i);
+            if (p.x() >= cutoff) kept.append(p);
+        }
+        s->replace(kept);
+    }
+
+    void onUwb(double distance, double angle) {
+        double now = QDateTime::currentMSecsSinceEpoch() / 1000.0; // absolute seconds
+        double cutoff = now - x_window;
+        // prune old points from all series we maintain
+        QList<QLineSeries*> allSeries = { cmd_series, uwb_cmd_series, vision_cmd_series,
+                                          uwb_data_distance_series, uwb_data_angle_series,
+                                          camera_distance_series, camera_angle_series,
+                                          cmd_ang_series, uwb_cmd_ang_series, vision_cmd_ang_series };
+        for (QLineSeries *s : allSeries) pruneSeriesBefore(s, cutoff);
+
+        // append new raw data to distance/angle series
+        uwb_data_distance_series->append(now, distance);
+        uwb_data_angle_series->append(now, angle);
+        if (uwb_data_distance_series->count() > max_points) uwb_data_distance_series->remove(0);
+        if (uwb_data_angle_series->count() > max_points) uwb_data_angle_series->remove(0);
+
+        // update raw-chart X axes and autoscale Y axes
+        dist_axisX->setRange(cutoff, now);
+        ang_axisX->setRange(cutoff, now);
+        adjustRawDistanceYAxis();
+        adjustRawAngleYAxis();
+    }
+    void onVision(double distance, double angle) {
+        double now = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        double cutoff = now - x_window;
+        QList<QLineSeries*> allSeries = { cmd_series, uwb_cmd_series, vision_cmd_series,
+                                          uwb_data_distance_series, uwb_data_angle_series,
+                                          camera_distance_series, camera_angle_series,
+                                          cmd_ang_series, uwb_cmd_ang_series, vision_cmd_ang_series };
+        for (QLineSeries *s : allSeries) pruneSeriesBefore(s, cutoff);
+
+        // append to camera raw series
+        camera_distance_series->append(now, distance);
+        camera_angle_series->append(now, angle);
+        if (camera_distance_series->count() > max_points) camera_distance_series->remove(0);
+        if (camera_angle_series->count() > max_points) camera_angle_series->remove(0);
+
+        // adjust raw axes
+        dist_axisX->setRange(cutoff, now);
+        ang_axisX->setRange(cutoff, now);
+        adjustRawDistanceYAxis();
+        adjustRawAngleYAxis();
+    }
+    void onCmd(double linear_x, double angular_z) {
+        double now = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        double cutoff = now - x_window;
+        QList<QLineSeries*> linearSeries = { cmd_series, uwb_cmd_series, vision_cmd_series };
+        for (QLineSeries *s : linearSeries) pruneSeriesBefore(s, cutoff);
+        cmd_series->append(now, linear_x);
+        if (cmd_series->count() > max_points) cmd_series->remove(0);
+
+        QList<QLineSeries*> angSeries = { cmd_ang_series, uwb_cmd_ang_series, vision_cmd_ang_series };
+        for (QLineSeries *s : angSeries) pruneSeriesBefore(s, cutoff);
+        cmd_ang_series->append(now, angular_z);
+        if (cmd_ang_series->count() > max_points) cmd_ang_series->remove(0);
+
+        // update main axis ranges
+        axisX->setRange(cutoff, now);
+        axisX2->setRange(cutoff, now);
+        adjustLinearYAxis();
+        adjustAngularYAxis();
+    }
+    void onUwbCmd(double linear_x, double angular_z) {
+        double now = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        double cutoff = now - x_window;
+        QList<QLineSeries*> linearSeries = { cmd_series, uwb_cmd_series, vision_cmd_series };
+        for (QLineSeries *s : linearSeries) pruneSeriesBefore(s, cutoff);
+        uwb_cmd_series->append(now, linear_x);
+        if (uwb_cmd_series->count() > max_points) uwb_cmd_series->remove(0);
+
+        QList<QLineSeries*> angSeries = { cmd_ang_series, uwb_cmd_ang_series, vision_cmd_ang_series };
+        for (QLineSeries *s : angSeries) pruneSeriesBefore(s, cutoff);
+        uwb_cmd_ang_series->append(now, angular_z);
+        if (uwb_cmd_ang_series->count() > max_points) uwb_cmd_ang_series->remove(0);
+
+        axisX->setRange(cutoff, now);
+        axisX2->setRange(cutoff, now);
+        adjustLinearYAxis();
+        adjustAngularYAxis();
+    }
+    void onVisionCmd(double linear_x, double angular_z) {
+        double now = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        double cutoff = now - x_window;
+        QList<QLineSeries*> linearSeries = { cmd_series, uwb_cmd_series, vision_cmd_series };
+        for (QLineSeries *s : linearSeries) pruneSeriesBefore(s, cutoff);
+        vision_cmd_series->append(now, linear_x);
+        if (vision_cmd_series->count() > max_points) vision_cmd_series->remove(0);
+
+        QList<QLineSeries*> angSeries = { cmd_ang_series, uwb_cmd_ang_series, vision_cmd_ang_series };
+        for (QLineSeries *s : angSeries) pruneSeriesBefore(s, cutoff);
+        vision_cmd_ang_series->append(now, angular_z);
+        if (vision_cmd_ang_series->count() > max_points) vision_cmd_ang_series->remove(0);
+
+        axisX->setRange(cutoff, now);
+        axisX2->setRange(cutoff, now);
+        adjustLinearYAxis();
+        adjustAngularYAxis();
+    }
+    void onFollowState(const QString &s) {
+        mode_label->setText(QString("当前状态机: ") + s);
+    }
+
+private:
+    QLabel *mode_label;
+    QChart *chart;
+    QChartView *chartView;
+    QLineSeries *uwb_series;
+    QLineSeries *vision_series;
+    QLineSeries *cmd_series;
+    QLineSeries *uwb_cmd_series;
+    QLineSeries *vision_cmd_series;
+    // angle series from uwb/vision states
+    QLineSeries *uwb_angle_series;
+    QLineSeries *vision_angle_series;
+    // raw topic specific charts (distance and angle separated)
+    QChart *dist_chart;
+    QChartView *dist_view;
+    QLineSeries *uwb_data_distance_series;
+    QLineSeries *camera_distance_series;
+    QValueAxis *dist_axisX;
+    QValueAxis *dist_axisY;
+
+    QChart *ang_raw_chart;
+    QChartView *ang_raw_view;
+    QLineSeries *uwb_data_angle_series;
+    QLineSeries *camera_angle_series;
+    QValueAxis *ang_axisX;
+    QValueAxis *ang_axisY;
+    QValueAxis *axisX;
+    QValueAxis *axisY;
+    double x_window;
+    // angular chart objects
+    QChart *ang_chart;
+    QValueAxis *axisX2;
+    QValueAxis *axisY2;
+    QLineSeries *cmd_ang_series;
+    QLineSeries *uwb_cmd_ang_series;
+    QLineSeries *vision_cmd_ang_series;
+    QPushButton *save_csv_btn; // holds the "save image" button
+    QPushButton *reset_zoom_btn;
+    double start_time;
+    int max_points;
+
+public:
+    QPushButton *saveCsvButton() const { return save_csv_btn; } // returns image button
+    QPushButton *resetZoomButton() const { return reset_zoom_btn; }
+    // adjust Y axes to keep zero centered and fit data
+    void adjustLinearYAxis();
+    void adjustAngularYAxis();
+    void adjustRawDistanceYAxis();
+    void adjustRawAngleYAxis();
+    // (no ensureXWindow; using absolute timestamps and pruning)
+    void createToggle(QHBoxLayout *lay, const QString &label, QLineSeries *series);
+};
+
+// adjust linear chart Y axis symmetrically around zero based on data
+void MainWindowWrapper::adjustLinearYAxis() {
+    double maxAbs = 0.0;
+    QList<QLineSeries*> series = { cmd_series, uwb_cmd_series, vision_cmd_series };
+    for (QLineSeries *s : series) {
+        if (!s) continue;
+        for (int i = 0; i < s->count(); ++i) {
+            double v = s->at(i).y();
+            maxAbs = std::max(maxAbs, std::abs(v));
+        }
+    }
+    double r = std::max(0.01, maxAbs * 1.2);
+    axisY->setRange(-r, r);
+}
+
+// adjust angular chart Y axis symmetrically around zero based on data
+void MainWindowWrapper::adjustAngularYAxis() {
+    double maxAbs = 0.0;
+    QList<QLineSeries*> series = { cmd_ang_series, uwb_cmd_ang_series, vision_cmd_ang_series };
+    for (QLineSeries *s : series) {
+        if (!s) continue;
+        for (int i = 0; i < s->count(); ++i) {
+            double v = s->at(i).y();
+            maxAbs = std::max(maxAbs, std::abs(v));
+        }
+    }
+    double r = std::max(0.01, maxAbs * 1.2);
+    axisY2->setRange(-r, r);
+}
+
+// autoscale raw distance chart Y axis based on both uwb and camera distance series
+void MainWindowWrapper::adjustRawDistanceYAxis() {
+    double minVal = std::numeric_limits<double>::infinity();
+    double maxVal = -std::numeric_limits<double>::infinity();
+    QList<QLineSeries*> series = { uwb_data_distance_series, camera_distance_series };
+    for (QLineSeries *s : series) {
+        if (!s) continue;
+        for (int i = 0; i < s->count(); ++i) {
+            double v = s->at(i).y();
+            minVal = std::min(minVal, v);
+            maxVal = std::max(maxVal, v);
+        }
+    }
+    if (minVal == std::numeric_limits<double>::infinity()) {
+        // no data yet
+        minVal = -0.1; maxVal = 0.1;
+    }
+    double margin = (maxVal - minVal) * 0.1 + 0.01;
+    dist_axisY->setRange(minVal - margin, maxVal + margin);
+}
+
+// autoscale raw angle chart Y axis based on both uwb and camera angle series
+void MainWindowWrapper::adjustRawAngleYAxis() {
+    double minVal = std::numeric_limits<double>::infinity();
+    double maxVal = -std::numeric_limits<double>::infinity();
+    QList<QLineSeries*> series = { uwb_data_angle_series, camera_angle_series };
+    for (QLineSeries *s : series) {
+        if (!s) continue;
+        for (int i = 0; i < s->count(); ++i) {
+            double v = s->at(i).y();
+            minVal = std::min(minVal, v);
+            maxVal = std::max(maxVal, v);
+        }
+    }
+    if (minVal == std::numeric_limits<double>::infinity()) {
+        minVal = -0.1; maxVal = 0.1;
+    }
+    double margin = (maxVal - minVal) * 0.1 + 0.01;
+    ang_axisY->setRange(minVal - margin, maxVal + margin);
+}
+
+// forward declaration of ROS bridge function
+void run_ros_bridge(MainWindowWrapper *w);
+
+// (Removed shifting logic; using absolute timestamps and pruning old points)
+
+// helper: add a checkbox to `lay` that toggles visibility of `series`
+void MainWindowWrapper::createToggle(QHBoxLayout *lay, const QString &label, QLineSeries *series) {
+    if (!lay || !series) return;
+    QCheckBox *cb = new QCheckBox(label);
+    cb->setChecked(true);
+    lay->addWidget(cb);
+    QObject::connect(cb, &QCheckBox::stateChanged, [series](int state){
+        series->setVisible(state == Qt::Checked);
+    });
+}
+
+int main(int argc, char **argv) {
+    rclcpp::init(argc, argv);
+    QApplication app(argc, argv);
+
+    MainWindowWrapper *w = new MainWindowWrapper();
+    // 窗口标题
+    w->setWindowTitle("uwb_vision可视监控");
+    w->resize(1000, 800);
+    w->show();
+
+    // start ROS bridge in background thread
+    std::thread ros_thread(run_ros_bridge, w);
+
+    // capture window image handling (previously saved CSV)
+    QObject::connect(w->saveCsvButton(), &QPushButton::clicked, [w]() {
+        QString fname = QFileDialog::getSaveFileName(nullptr, "Save Charts Image",
+                                                     QDir::homePath(), "Images (*.png *.jpg);;All files (*)");
+        if (fname.isEmpty()) return;
+        // ensure extension
+        if (!fname.contains('.')) fname += ".png";
+        QPixmap pix = w->grab();
+        pix.save(fname);
+    });
+
+    QObject::connect(w->resetZoomButton(), &QPushButton::clicked, [w]() {
+        QList<QChart*> charts = w->findChildren<QChart*>();
+        for (QChart *chart : charts) {
+            for (QAbstractAxis *ax : chart->axes()) {
+                QValueAxis *v = qobject_cast<QValueAxis*>(ax);
+                if (v) v->setRange(0, 1);
+            }
+        }
+    });
+
+    // configure legend toggling, hover tooltips, pens, zooming
+    QPen penUwbCmd(QColor(200,0,0)); penUwbCmd.setWidth(2); penUwbCmd.setStyle(Qt::DashLine);
+    QPen penVisionCmd(QColor(0,150,0)); penVisionCmd.setWidth(2); penVisionCmd.setStyle(Qt::DotLine);
+    QList<QChart*> charts = w->findChildren<QChart*>();
+    for (QChart *chart : charts) {
+        for (QAbstractSeries *s : chart->series()) {
+            QLineSeries *ls = qobject_cast<QLineSeries*>(s);
+            if (!ls) continue;
+            if (ls->name() == "/uwb/cmd_vel") ls->setPen(penUwbCmd);
+            if (ls->name() == "/vision/cmd_vel") ls->setPen(penVisionCmd);
+            ls->setPointsVisible(false);
+            QObject::connect(ls, &QLineSeries::hovered, [w, ls](const QPointF &point, bool state){
+                if (state) {
+                    QString s = QString("%1: x=%2 y=%3").arg(ls->name()).arg(point.x()).arg(point.y());
+                    QToolTip::showText(QCursor::pos(), s);
+                } else {
+                    QToolTip::hideText();
+                }
+            });
+        }
+        QLegend *legend = chart->legend();
+        for (QLegendMarker *marker : legend->markers()) {
+            QObject::connect(marker, &QLegendMarker::clicked, [marker]() {
+                QAbstractSeries *s = marker->series();
+                if (!s) return;
+                s->setVisible(!s->isVisible());
+                marker->setVisible(true);
+            });
+        }
+        QChartView *view = qobject_cast<QChartView*>(chart->parentWidget());
+        if (view) {
+            view->setRubberBand(QChartView::RectangleRubberBand);
+            view->setMouseTracking(true);
+            view->setDragMode(QGraphicsView::ScrollHandDrag);
+        }
+    }
+
+    int ret = app.exec();
+
+    rclcpp::shutdown();
+    if (ros_thread.joinable()) ros_thread.join();
+    return ret;
+}
+
+#include "main.moc"

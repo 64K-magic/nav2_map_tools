@@ -1,0 +1,52 @@
+# Example Nav2 costmap snippet for filter_keepout::KeepoutFilter
+# Merge into your nav2_params.yaml under global_costmap / local_costmap.
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
+      keepout_filter:
+        plugin: "filter_keepout::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "keepout_costmap_filter_info"
+        use_sql: true
+        sql_db_path: "~/gps_filter_ws/data/keepout.db"
+        sql_table: "keepout_figures"
+        map_name: "warehouse_a"   # REQUIRED: current navigation map id
+        fill_polygons: true
+        line_thickness: 0.03
+        # CostmapFilter runs after inflation_layer — inflate keepouts here for footprint clearance
+        inflate: true
+        inflation_radius: 1.0
+        inscribed_radius: 0.40
+        cost_scaling_factor: 3.0
+        prohibition_topic: "prohibition_areas"
+        # refresh / reload — reload current map
+        # map:warehouse_b or warehouse_b — switch map and reload
+        refresh_topic: "keepout_refresh"
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: ["voxel_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
+      keepout_filter:
+        plugin: "filter_keepout::KeepoutFilter"
+        enabled: True
+        filter_info_topic: "keepout_costmap_filter_info"
+        use_sql: true
+        sql_db_path: "~/gps_filter_ws/data/keepout.db"
+        sql_table: "keepout_figures"
+        map_name: "warehouse_a"   # REQUIRED: current navigation map id
+        fill_polygons: true
+        line_thickness: 0.03
+        # CostmapFilter runs after inflation_layer — inflate keepouts here for footprint clearance
+        inflate: true
+        inflation_radius: 1.0
+        inscribed_radius: 0.40
+        cost_scaling_factor: 3.0
+        prohibition_topic: "prohibition_areas"
+        # refresh / reload — reload current map
+        # map:warehouse_b or warehouse_b — switch map and reload
+        refresh_topic: "keepout_refresh"

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>map_coordinates_edit_gui</name>
+  <version>0.0.0</version>
+  <description>Qt GUI to draw keepout figures on tile maps, convert via fromLL, and save to SQLite for Nav2.</description>
+  <maintainer email="cdf_168@163.com">64k-chen</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geographic_msgs</depend>
+  <depend>robot_localization</depend>
+  <depend>libsqlite3-dev</depend>
+
+  <export>
+  </export>
+</package>

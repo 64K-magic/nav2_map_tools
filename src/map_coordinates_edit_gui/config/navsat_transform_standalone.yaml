@@ -1,0 +1,21 @@
+# Standalone navsat_transform for map_coordinates_edit_gui when the
+# full localization stack is not running. Uses SetDatum (/datum).
+#
+# IMPORTANT: even with wait_for_datum / SetDatum, navsat_transform will NOT
+# make /fromLL valid until it has received at least one /odometry/filtered
+# message (has_transform_odom_). The GUI publishes a stub odometry for this.
+# Save/Load keepouts use local ENU from Origin Lat/Lon and do not require
+# /fromLL to succeed.
+
+navsat_transform:
+  ros__parameters:
+    frequency: 10.0
+    delay: 0.0
+    magnetic_declination_radians: 0.0
+    yaw_offset: 0.0
+    zero_altitude: true
+    broadcast_cartesian_transform: true
+    publish_filtered_gps: false
+    use_odometry_yaw: false
+    wait_for_datum: true
+    use_local_cartesian: true

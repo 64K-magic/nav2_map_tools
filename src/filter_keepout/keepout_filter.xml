@@ -1,0 +1,8 @@
+<library path="libkeepout_filter_plugin">
+  <!-- Must be Layer: Costmap2DROS uses pluginlib::ClassLoader<nav2_costmap_2d::Layer> for filters -->
+  <class type="filter_keepout::KeepoutFilter" base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Custom keepout filter based on ROS1 costmap_prohibition_layer logic.
+    </description>
+  </class>
+</library>

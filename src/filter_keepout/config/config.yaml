@@ -1,0 +1,3 @@
+keepout_filter:
+  ros__parameters:
+    prohibition_topic: "prohibition_areas"

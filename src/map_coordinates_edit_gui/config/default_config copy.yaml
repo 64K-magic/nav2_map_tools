@@ -1,0 +1,13 @@
+# Default configuration for map_coordinates_edit_gui
+# Default center coordinates for tile map loading
+default_center_lat: 30.59170598225533
+default_center_lon: 104.08352549614284
+
+# Default zoom level for tile map
+default_zoom: 18
+
+# Default tile URL (TianDiTu example)
+# default_tile_url: "https://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={level}&TILEROW={y}&TILECOL={x}&tk=f6cfa9d6a754fb135ba600ff23549c69"
+default_tile_url: "https://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={level}&TILEROW={y}&TILECOL={x}&tk=3a4624a82f97a6f10db0da558390e530"
+# default_tile_url: "https://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={level}&TILEROW={y}&TILECOL={x}&tk=419c570fdad5277099b20f26fd13c7a6"
+# 819594ab57d78270201685b76fbc856a
