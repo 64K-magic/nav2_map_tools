@@ -15,6 +15,7 @@
   <depend>nav_msgs</depend>
   <depend>geographic_msgs</depend>
   <depend>robot_localization</depend>
+  <depend>tf2</depend>
   <depend>libsqlite3-dev</depend>
 
   <export>

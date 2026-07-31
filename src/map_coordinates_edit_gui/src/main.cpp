@@ -79,6 +79,8 @@
 
 #include "map_coordinates_edit_gui/qnode.hpp"
 #include "map_coordinates_edit_gui/keepout_db.hpp"
+#include "map_coordinates_edit_gui/pgm_io.hpp"
+#include "map_coordinates_edit_gui/pgm_assist.hpp"
 
 // Tile map loader class
 class TileMapLoader : public QObject {
@@ -1995,7 +1997,12 @@ class MainWindowWrapper : public QWidget {
     Q_OBJECT
 
 public:
-    MainWindowWrapper(QWidget *parent = nullptr) : QWidget(parent), qnode_(new QNode(this)), tileLoader_(new TileMapLoader(this)) {
+    MainWindowWrapper(QWidget *parent = nullptr)
+    : QWidget(parent)
+    , qnode_(new QNode(this))
+    , tileLoader_(new TileMapLoader(this))
+    , pgmAssist_(new PgmAssistController(this))
+    {
         loadConfig();
         currentZoom_ = defaultZoom_;
         currentCenterLat_ = defaultCenterLat_;
@@ -2005,6 +2012,20 @@ public:
         setupConnections();
         refreshMapNameList();
         qnode_->start();
+        if (pgmAssist_ && qnode_) {
+            pgmAssist_->setNode(qnode_->node());
+            pgmAssist_->attach(scene_, mapItem_, mapView_);
+            connect(pgmAssist_, &PgmAssistController::toolModeChanged, this, [this](bool exclusive) {
+                if (exclusive) {
+                    stopDrawing();
+                }
+            });
+            connect(pgmAssist_, &PgmAssistController::statusMessage, this, [this](const QString & msg) {
+                if (drawingToolLabel_) {
+                    drawingToolLabel_->setText(msg);
+                }
+            });
+        }
         // Timer to debounce pan updates before reloading tiles
         panDebounceTimer_ = new QTimer(this);
         panDebounceTimer_->setSingleShot(true);
@@ -2246,6 +2267,9 @@ private slots:
             // User clicked「加载地图」to leave PGM: drop previous keepouts, enable tiles.
             if (isPgmMap_) {
                 clearShapes();
+                if (pgmAssist_) {
+                    pgmAssist_->clearPgmMap();
+                }
                 isPgmMap_ = false;
             }
             loadOnlineTileMap();
@@ -2329,8 +2353,17 @@ private slots:
             }
         }
 
-        // Load PGM image
-        QPixmap pixmap(pgmFileName);
+        // Load PGM image (prefer robust P2/P5 parser)
+        QImage editable;
+        if (!pgm_io::loadPGM(pgmFileName, editable)) {
+            QPixmap fallback(pgmFileName);
+            if (fallback.isNull()) {
+                QMessageBox::warning(this, "Error", "Cannot load PGM image: " + pgmFileName);
+                return;
+            }
+            editable = fallback.toImage().convertToFormat(QImage::Format_Grayscale8);
+        }
+        QPixmap pixmap = QPixmap::fromImage(editable);
         if (!pixmap.isNull()) {
             // Stop any pending tile reload from a previous pan on the tile map.
             if (panDebounceTimer_) {
@@ -2367,6 +2400,9 @@ private slots:
             mapView_->resetTransform();
             mapView_->fitInView(mapItem_, Qt::KeepAspectRatio);
             mapView_->centerOn(mapItem_);
+            if (pgmAssist_) {
+                pgmAssist_->setPgmMap(editable, pgmFileName, resolution, originX, originY);
+            }
             refreshCoordPanelForMapMode();
             updateInflationPreview();
             qDebug() << "Loaded PGM map:" << pgmFileName
@@ -2394,6 +2430,9 @@ private slots:
         }
 
         // Mark as tile map mode
+        if (isPgmMap_ && pgmAssist_) {
+            pgmAssist_->clearPgmMap();
+        }
         isPgmMap_ = false;
         refreshCoordPanelForMapMode();
         // Use current center coordinates
@@ -3742,6 +3781,18 @@ private:
         pubLay->addStretch(1);
         toolbox->addItem(pubPage, QStringLiteral("④ 发布"));
 
+        // —— 一级：PGM 辅助（map_editor 移植）——
+        if (pgmAssist_) {
+            QWidget * pgmPage = makeDrawerPage();
+            QVBoxLayout * pgmLay = qobject_cast<QVBoxLayout *>(pgmPage->layout());
+            QScrollArea * pgmScroll = new QScrollArea();
+            pgmScroll->setWidgetResizable(true);
+            pgmScroll->setFrameShape(QFrame::NoFrame);
+            pgmScroll->setWidget(pgmAssist_->createPanel());
+            pgmLay->addWidget(pgmScroll, 1);
+            toolbox->addItem(pgmPage, QStringLiteral("⑤ PGM辅助"));
+        }
+
         toolbox->setCurrentIndex(1);  // default open 禁行绘制
         sideLay->addWidget(toolbox, 1);
         splitter->addWidget(sidebarFrame_);
@@ -4064,6 +4115,7 @@ private:
     QDoubleSpinBox* inflationRadiusSpin_{nullptr};
     QPushButton* publishBtn_;
     TileMapLoader* tileLoader_;
+    PgmAssistController* pgmAssist_{nullptr};
 
     QNode* qnode_;
     geometry_msgs::msg::PoseArray prohibitionAreas_;
