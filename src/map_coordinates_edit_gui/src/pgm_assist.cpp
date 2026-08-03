@@ -120,6 +120,8 @@ void PgmAssistController::setToolMode(ToolMode mode)
   }
   tool_mode_ = mode;
   painting_ = false;
+  dragging_control_ = false;
+  dragging_index_ = -1;
   clearBrushOverlay();
   if (brush_btn_) {
     brush_btn_->setChecked(mode == ToolMode::Brush);
@@ -129,6 +131,11 @@ void PgmAssistController::setToolMode(ToolMode mode)
   }
   if (mode == ToolMode::PathDraw) {
     preview_enabled_ = true;
+    if (view_) {
+      view_->viewport()->setCursor(Qt::CrossCursor);
+    }
+  } else if (view_) {
+    view_->viewport()->unsetCursor();
   }
   emit toolModeChanged(mode != ToolMode::Idle);
 }
@@ -237,6 +244,8 @@ void PgmAssistController::clearPathItems(bool /*keep_persistent*/)
   if (!scene_) {
     return;
   }
+  dragging_control_ = false;
+  dragging_index_ = -1;
   for (auto * it : end_items_) {
     scene_->removeItem(it);
     delete it;
@@ -293,11 +302,43 @@ void PgmAssistController::addPathEndpoint(const QPointF & p)
     const QPointF mid = (end_points_[end_points_.size() - 2] + end_points_.back()) * 0.5;
     control_points_.push_back(mid);
     auto * cp = scene_->addEllipse(
-      mid.x() - 6, mid.y() - 6, 12, 12, QPen(QColor(0, 200, 0)), QBrush(QColor(0, 255, 0, 120)));
+      mid.x() - 8, mid.y() - 8, 16, 16, QPen(QColor(0, 180, 0), 2), QBrush(QColor(0, 255, 0, 140)));
     cp->setZValue(kZPathCtrl + 1);
+    cp->setFlag(QGraphicsItem::ItemIsSelectable, false);
+    cp->setAcceptedMouseButtons(Qt::NoButton);  // we handle drag in the view event filter
     control_items_.push_back(cp);
   }
   preview_enabled_ = true;
+  updatePathPreview();
+}
+
+int PgmAssistController::hitTestControlPoint(const QPointF & scene_pt) const
+{
+  // Prefer control handles over endpoints / path stroke (radius ~10 scene px).
+  constexpr qreal kHitR = 10.0;
+  constexpr qreal kHitR2 = kHitR * kHitR;
+  int best = -1;
+  qreal best_d2 = kHitR2;
+  for (int i = 0; i < static_cast<int>(control_points_.size()); ++i) {
+    const QPointF d = scene_pt - control_points_[i];
+    const qreal d2 = QPointF::dotProduct(d, d);
+    if (d2 <= best_d2) {
+      best_d2 = d2;
+      best = i;
+    }
+  }
+  return best;
+}
+
+void PgmAssistController::updateControlPoint(int index, const QPointF & pos)
+{
+  if (index < 0 || index >= static_cast<int>(control_points_.size())) {
+    return;
+  }
+  control_points_[index] = pos;
+  if (index < static_cast<int>(control_items_.size()) && control_items_[index]) {
+    control_items_[index]->setRect(pos.x() - 8, pos.y() - 8, 16, 16);
+  }
   updatePathPreview();
 }
 
@@ -899,10 +940,24 @@ bool PgmAssistController::eventFilter(QObject * obj, QEvent * event)
     if (event->type() == QEvent::MouseButtonPress) {
       auto * me = static_cast<QMouseEvent *>(event);
       if (me->button() == Qt::LeftButton) {
-        addPathEndpoint(view_->mapToScene(me->pos()));
+        const QPointF sp = view_->mapToScene(me->pos());
+        const int hit = hitTestControlPoint(sp);
+        if (hit >= 0) {
+          dragging_control_ = true;
+          dragging_index_ = hit;
+          preview_enabled_ = false;
+          updateControlPoint(hit, sp);
+          if (view_) {
+            view_->viewport()->setCursor(Qt::ClosedHandCursor);
+          }
+          return true;
+        }
+        addPathEndpoint(sp);
         return true;
       }
       if (me->button() == Qt::RightButton) {
+        dragging_control_ = false;
+        dragging_index_ = -1;
         preview_enabled_ = false;
         updatePathPreview();
         return true;
@@ -910,8 +965,29 @@ bool PgmAssistController::eventFilter(QObject * obj, QEvent * event)
     } else if (event->type() == QEvent::MouseMove) {
       auto * me = static_cast<QMouseEvent *>(event);
       const QPointF sp = view_->mapToScene(me->pos());
+      if (dragging_control_ && dragging_index_ >= 0) {
+        updateControlPoint(dragging_index_, sp);
+        return true;
+      }
+      // Hover cue on control handles
+      if (view_) {
+        view_->viewport()->setCursor(
+          hitTestControlPoint(sp) >= 0 ? Qt::OpenHandCursor : Qt::CrossCursor);
+      }
       updatePathPreview(&sp);
       return false;  // allow pan with middle etc.
+    } else if (event->type() == QEvent::MouseButtonRelease) {
+      auto * me = static_cast<QMouseEvent *>(event);
+      if (me->button() == Qt::LeftButton && dragging_control_) {
+        dragging_control_ = false;
+        dragging_index_ = -1;
+        preview_enabled_ = true;
+        if (view_) {
+          view_->viewport()->setCursor(Qt::CrossCursor);
+        }
+        updatePathPreview();
+        return true;
+      }
     }
   }
   return QObject::eventFilter(obj, event);

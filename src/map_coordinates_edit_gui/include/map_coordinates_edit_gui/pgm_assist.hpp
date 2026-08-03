@@ -113,6 +113,8 @@ private:
   void clearPersistentPath();
   void addPathEndpoint(const QPointF & p);
   void updatePathPreview(const QPointF * cursor = nullptr);
+  int hitTestControlPoint(const QPointF & scene_pt) const;
+  void updateControlPoint(int index, const QPointF & pos);
   std::vector<QPointF> samplePath(int samples_per_segment = 100) const;
   void drawPersistentPath(const std::vector<QPointF> & pts);
   void redrawPersistentPath();
@@ -171,6 +173,8 @@ private:
   std::vector<QGraphicsEllipseItem *> control_items_;
   QGraphicsPathItem * preview_path_{nullptr};
   bool preview_enabled_{true};
+  bool dragging_control_{false};
+  int dragging_index_{-1};
   std::vector<QPointF> persistent_pts_;
   QGraphicsPathItem * persistent_path_{nullptr};
   std::vector<QGraphicsEllipseItem *> path_point_items_;
