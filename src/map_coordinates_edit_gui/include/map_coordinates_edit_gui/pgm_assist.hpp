@@ -1,9 +1,11 @@
 #ifndef MAP_COORDINATES_EDIT_GUI_PGM_ASSIST_HPP_
 #define MAP_COORDINATES_EDIT_GUI_PGM_ASSIST_HPP_
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <QGraphicsEllipseItem>
@@ -27,6 +29,8 @@
 class SpeedPlot;
 class QCheckBox;
 class QComboBox;
+class QGroupBox;
+class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSlider;
@@ -36,9 +40,8 @@ class QTextEdit;
 class QToolButton;
 
 /**
- * PGM assist tools ported from map_editor:
- * brush erase, path draw/save/load, ROS overlays (pose/scan/obstacles/cmd_vel).
- * Operates on the shared map scene/pixmap of map_coordinates_edit_gui.
+ * Path drawing + PGM brush/ROS overlays for map_coordinates_edit_gui.
+ * Path works on both PGM (YAML meters) and tile maps (ENU via Origin Lat/Lon).
  */
 class PgmAssistController : public QObject
 {
@@ -50,29 +53,48 @@ public:
     PathDraw,
   };
 
+  enum class FrameMode {
+    None,
+    Pgm,
+    Tile,
+  };
+
+  using SceneToLatLonFn = std::function<bool(const QPointF & scene, double & lat, double & lon)>;
+  using LatLonToSceneFn = std::function<QPointF(double lat, double lon)>;
+  using SceneToMapMetersFn =
+    std::function<bool(const QPointF & scene, double & x, double & y, QString & err)>;
+  using MapMetersToSceneFn =
+    std::function<bool(double x, double y, QPointF & scene, QString & err)>;
+
   explicit PgmAssistController(QObject * parent = nullptr);
   ~PgmAssistController() override;
 
-  /** Bind to the main map scene/view/pixmap. Call after UI is built. */
   void attach(QGraphicsScene * scene, QGraphicsPixmapItem * map_item, QGraphicsView * view);
-
-  /** Use the shared ROS node for overlay subscriptions. */
   void setNode(const rclcpp::Node::SharedPtr & node);
 
-  /**
-   * Activate after a PGM is loaded. editable image is grayscale working copy.
-   * map_path used for sibling YAML lookup when saving paths.
-   */
+  /** Tile ENU converters (scene↔map meters) + lat/lon for mosaic remaps. */
+  void setTileConverters(
+    SceneToLatLonFn scene_to_ll, LatLonToSceneFn ll_to_scene,
+    SceneToMapMetersFn scene_to_map, MapMetersToSceneFn map_to_scene);
+
   void setPgmMap(
     const QImage & editable, const QString & map_path,
     double resolution, double origin_x, double origin_y);
 
-  /** Leave PGM mode (tile map): disable tools and clear overlays. */
-  void clearPgmMap();
+  /** Switch to tile frame (path OK). Clears PGM brush/image/ROS overlays. */
+  void setTileMapActive();
 
-  bool hasPgmMap() const { return !image_.isNull(); }
+  /** Leave PGM editing; clears path unless keep_path. */
+  void clearPgmMap(bool keep_path = false);
 
-  /** Build the sidebar page contents (caller owns returned widget). */
+  bool hasPgmMap() const { return frame_mode_ == FrameMode::Pgm && !image_.isNull(); }
+  bool pathReady() const { return frame_mode_ == FrameMode::Pgm || frame_mode_ == FrameMode::Tile; }
+  FrameMode frameMode() const { return frame_mode_; }
+
+  /** Remap in-progress / persistent path across tile mosaic reloads. */
+  void beginTileRemap(const SceneToLatLonFn & scene_to_ll);
+  void endTileRemap(const LatLonToSceneFn & ll_to_scene);
+
   QWidget * createPanel(QWidget * parent = nullptr);
 
   void setToolMode(ToolMode mode);
@@ -95,9 +117,9 @@ public:
 
 signals:
   void statusMessage(const QString & msg);
-  /** Emitted when brush/path tool claims exclusive mouse input. */
   void toolModeChanged(bool exclusive);
   void imageEdited();
+  void frameModeChanged(FrameMode mode);
 
 protected:
   bool eventFilter(QObject * obj, QEvent * event) override;
@@ -108,6 +130,7 @@ private:
   void paintAt(const QPointF & scene_pt);
   void updateBrushOverlay(const QPointF & scene_pt);
   void clearBrushOverlay();
+  void refreshPanelAvailability();
 
   void clearPathItems(bool keep_persistent);
   void clearPersistentPath();
@@ -118,9 +141,11 @@ private:
   std::vector<QPointF> samplePath(int samples_per_segment = 100) const;
   void drawPersistentPath(const std::vector<QPointF> & pts);
   void redrawPersistentPath();
+  void rebuildPathGraphicsFromPoints();
 
-  QPointF worldToScene(double x, double y) const;
-  void sceneToWorld(const QPointF & scene_pt, double & x, double & y) const;
+  bool sceneToMapMeters(const QPointF & scene_pt, double & x, double & y, QString & err) const;
+  bool mapMetersToScene(double x, double y, QPointF & scene_pt, QString & err) const;
+  QPointF worldToScenePgm(double x, double y) const;
   bool loadYamlBesideMap(double & resolution, double & origin_x, double & origin_y) const;
 
   void updateRobotPose(double x, double y, double yaw);
@@ -152,6 +177,12 @@ private:
   QGraphicsView * view_{nullptr};
   rclcpp::Node::SharedPtr node_;
 
+  FrameMode frame_mode_{FrameMode::None};
+  SceneToLatLonFn tile_scene_to_ll_;
+  LatLonToSceneFn tile_ll_to_scene_;
+  SceneToMapMetersFn tile_scene_to_map_;
+  MapMetersToSceneFn tile_map_to_scene_;
+
   QImage image_;
   QString map_path_;
   double resolution_{0.05};
@@ -166,7 +197,6 @@ private:
   int max_undo_{10};
   QGraphicsEllipseItem * brush_overlay_{nullptr};
 
-  // Path drawing
   std::vector<QPointF> end_points_;
   std::vector<QPointF> control_points_;
   std::vector<QGraphicsEllipseItem *> end_items_;
@@ -185,7 +215,12 @@ private:
   int point_density_{1};
   int arrow_density_{10};
 
-  // ROS overlays
+  // Temporary lat/lon while remapping tile mosaic
+  std::vector<std::pair<double, double>> remap_end_ll_;
+  std::vector<std::pair<double, double>> remap_ctrl_ll_;
+  std::vector<std::pair<double, double>> remap_persistent_ll_;
+  bool remapping_{false};
+
   QGraphicsEllipseItem * robot_item_{nullptr};
   QGraphicsPolygonItem * robot_arrow_{nullptr};
   std::vector<QGraphicsEllipseItem *> scan_items_;
@@ -200,7 +235,9 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr obstacles_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr speed_sub_;
 
-  // Panel widgets (not owned if parented to panel)
+  QLabel * mode_hint_{nullptr};
+  QGroupBox * pgm_only_box_{nullptr};
+  QGroupBox * ros_box_{nullptr};
   QSlider * brush_slider_{nullptr};
   QToolButton * brush_btn_{nullptr};
   QToolButton * path_btn_{nullptr};

@@ -2015,6 +2015,46 @@ public:
         if (pgmAssist_ && qnode_) {
             pgmAssist_->setNode(qnode_->node());
             pgmAssist_->attach(scene_, mapItem_, mapView_);
+            pgmAssist_->setTileConverters(
+                [this](const QPointF & scene, double & lat, double & lon) -> bool {
+                    return sceneToLatLon(scene, lat, lon);
+                },
+                [this](double lat, double lon) -> QPointF {
+                    return latLonToScene(lat, lon);
+                },
+                [this](const QPointF & scene, double & x, double & y, QString & err) -> bool {
+                    double lat = 0, lon = 0;
+                    if (!sceneToLatLon(scene, lat, lon)) {
+                        err = QStringLiteral("Cannot convert scene→lat/lon (tile mosaic?)");
+                        return false;
+                    }
+                    double lat0 = 0, lon0 = 0, yawRad = 0;
+                    std::string e;
+                    if (!readOriginLatLon(lat0, lon0, yawRad, e)) {
+                        err = QString::fromStdString(e);
+                        return false;
+                    }
+                    const auto p = latLonToMapMeters(lat, lon, lat0, lon0, yawRad);
+                    x = p.x;
+                    y = p.y;
+                    return true;
+                },
+                [this](double x, double y, QPointF & scene, QString & err) -> bool {
+                    double lat0 = 0, lon0 = 0, yawRad = 0;
+                    std::string e;
+                    if (!readOriginLatLon(lat0, lon0, yawRad, e)) {
+                        err = QString::fromStdString(e);
+                        return false;
+                    }
+                    if (currentMinTileX_ == INT_MAX) {
+                        err = QStringLiteral("Load tile map first");
+                        return false;
+                    }
+                    double lat = 0, lon = 0;
+                    mapMetersToLatLon(x, y, lat0, lon0, yawRad, lat, lon);
+                    scene = latLonToScene(lat, lon);
+                    return true;
+                });
             connect(pgmAssist_, &PgmAssistController::toolModeChanged, this, [this](bool exclusive) {
                 if (exclusive) {
                     stopDrawing();
@@ -2268,7 +2308,7 @@ private slots:
             if (isPgmMap_) {
                 clearShapes();
                 if (pgmAssist_) {
-                    pgmAssist_->clearPgmMap();
+                    pgmAssist_->clearPgmMap(false);
                 }
                 isPgmMap_ = false;
             }
@@ -2431,7 +2471,7 @@ private slots:
 
         // Mark as tile map mode
         if (isPgmMap_ && pgmAssist_) {
-            pgmAssist_->clearPgmMap();
+            pgmAssist_->clearPgmMap(false);
         }
         isPgmMap_ = false;
         refreshCoordPanelForMapMode();
@@ -2538,6 +2578,9 @@ private slots:
                     lat = tiley2lat_d(tileY, oldZoom);
                     return true;
                 };
+                if (pgmAssist_) {
+                    pgmAssist_->beginTileRemap(sceneToLatLonOld);
+                }
                 for (ShapeItem * shape : mapView_->getAllShapeItems()) {
                     GeoShape g;
                     g.item = shape;
@@ -2590,14 +2633,19 @@ private slots:
             }
             displayedTileZoom_ = currentZoom_;
 
-            // Re-project shapes into the NEW tile scene via lat/lon (true geographic scale).
+            // Re-project path + keepout shapes into the NEW tile scene via lat/lon.
+            auto latLonToSceneNew = [&](double lat, double lon) -> QPointF {
+                const double tileX = lon2tilex_d(lon, currentZoom_);
+                const double tileY = lat2tiley_d(lat, currentZoom_);
+                return QPointF((tileX - currentMinTileX_) * 256.0,
+                               (tileY - currentMinTileY_) * 256.0);
+            };
+            if (pgmAssist_ && currentMinTileX_ != INT_MAX) {
+                pgmAssist_->endTileRemap(latLonToSceneNew);
+                pgmAssist_->setTileMapActive();
+            }
+
             if (!geoShapes.empty() && currentMinTileX_ != INT_MAX) {
-                auto latLonToSceneNew = [&](double lat, double lon) -> QPointF {
-                    const double tileX = lon2tilex_d(lon, currentZoom_);
-                    const double tileY = lat2tiley_d(lat, currentZoom_);
-                    return QPointF((tileX - currentMinTileX_) * 256.0,
-                                   (tileY - currentMinTileY_) * 256.0);
-                };
                 for (const GeoShape & g : geoShapes) {
                     if (!g.item) continue;
                     if (g.type == ShapeItem::Circle && !g.latlon.empty()) {
@@ -3790,7 +3838,7 @@ private:
             pgmScroll->setFrameShape(QFrame::NoFrame);
             pgmScroll->setWidget(pgmAssist_->createPanel());
             pgmLay->addWidget(pgmScroll, 1);
-            toolbox->addItem(pgmPage, QStringLiteral("⑤ PGM辅助"));
+            toolbox->addItem(pgmPage, QStringLiteral("⑤ 路径绘制"));
         }
 
         toolbox->setCurrentIndex(1);  // default open 禁行绘制

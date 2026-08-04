@@ -5,6 +5,7 @@
 
 #include <QCheckBox>
 #include <QFile>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -18,6 +19,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -40,6 +42,21 @@ constexpr int kZRobot = 700;
 constexpr int kZScan = 650;
 constexpr int kZPath = 500;
 constexpr int kZPathCtrl = 550;
+
+/** Screen-constant handle: size in device pixels, does not grow when zooming. */
+QGraphicsEllipseItem * makeScreenHandle(
+  QGraphicsScene * scene, const QPointF & scene_pos, qreal diameter_px,
+  const QPen & pen, const QBrush & brush, qreal z)
+{
+  auto * item = scene->addEllipse(
+    -diameter_px * 0.5, -diameter_px * 0.5, diameter_px, diameter_px, pen, brush);
+  item->setPos(scene_pos);
+  item->setZValue(z);
+  item->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+  item->setFlag(QGraphicsItem::ItemIsSelectable, false);
+  item->setAcceptedMouseButtons(Qt::NoButton);
+  return item;
+}
 }  // namespace
 
 PgmAssistController::PgmAssistController(QObject * parent)
@@ -71,6 +88,16 @@ void PgmAssistController::setNode(const rclcpp::Node::SharedPtr & node)
   node_ = node;
 }
 
+void PgmAssistController::setTileConverters(
+  SceneToLatLonFn scene_to_ll, LatLonToSceneFn ll_to_scene,
+  SceneToMapMetersFn scene_to_map, MapMetersToSceneFn map_to_scene)
+{
+  tile_scene_to_ll_ = std::move(scene_to_ll);
+  tile_ll_to_scene_ = std::move(ll_to_scene);
+  tile_scene_to_map_ = std::move(scene_to_map);
+  tile_map_to_scene_ = std::move(map_to_scene);
+}
+
 void PgmAssistController::setPgmMap(
   const QImage & editable, const QString & map_path,
   double resolution, double origin_x, double origin_y)
@@ -91,16 +118,45 @@ void PgmAssistController::setPgmMap(
   if (!image_.isNull()) {
     undo_stack_.push_back(image_);
   }
+  frame_mode_ = FrameMode::Pgm;
   syncPixmap();
   setToolMode(ToolMode::Idle);
-  emit statusMessage(QStringLiteral("PGM 辅助已就绪: %1").arg(QFileInfo(map_path).fileName()));
+  refreshPanelAvailability();
+  emit frameModeChanged(frame_mode_);
+  emit statusMessage(QStringLiteral("PGM 模式：路径用 YAML 米制；可画笔擦除。(%1)")
+                       .arg(QFileInfo(map_path).fileName()));
 }
 
-void PgmAssistController::clearPgmMap()
+void PgmAssistController::setTileMapActive()
 {
-  setToolMode(ToolMode::Idle);
-  clearPathItems(false);
-  clearPersistentPath();
+  // Drop PGM brush state; keep path (tile remaps handle geometry).
+  if (tool_mode_ == ToolMode::Brush) {
+    setToolMode(ToolMode::Idle);
+  }
+  image_ = QImage();
+  map_path_.clear();
+  undo_stack_.clear();
+  clearBrushOverlay();
+  clearScanItems();
+  clearObstacleItems();
+  clearRobotItems();
+  have_robot_pose_ = false;
+  frame_mode_ = FrameMode::Tile;
+  refreshPanelAvailability();
+  emit frameModeChanged(frame_mode_);
+  emit statusMessage(QStringLiteral("瓦片模式：路径用 Origin Lat/Lon 的 ENU 米制。"));
+}
+
+void PgmAssistController::clearPgmMap(bool keep_path)
+{
+  if (tool_mode_ == ToolMode::Brush) {
+    setToolMode(ToolMode::Idle);
+  }
+  if (!keep_path) {
+    setToolMode(ToolMode::Idle);
+    clearPathItems(false);
+    clearPersistentPath();
+  }
   clearScanItems();
   clearObstacleItems();
   clearRobotItems();
@@ -109,6 +165,114 @@ void PgmAssistController::clearPgmMap()
   map_path_.clear();
   undo_stack_.clear();
   have_robot_pose_ = false;
+  frame_mode_ = FrameMode::None;
+  refreshPanelAvailability();
+  emit frameModeChanged(frame_mode_);
+}
+
+void PgmAssistController::beginTileRemap(const SceneToLatLonFn & scene_to_ll)
+{
+  remap_end_ll_.clear();
+  remap_ctrl_ll_.clear();
+  remap_persistent_ll_.clear();
+  remapping_ = false;
+  if (!scene_to_ll) {
+    return;
+  }
+  remapping_ = true;
+  for (const QPointF & p : end_points_) {
+    double lat = 0, lon = 0;
+    if (scene_to_ll(p, lat, lon)) {
+      remap_end_ll_.emplace_back(lat, lon);
+    }
+  }
+  for (const QPointF & p : control_points_) {
+    double lat = 0, lon = 0;
+    if (scene_to_ll(p, lat, lon)) {
+      remap_ctrl_ll_.emplace_back(lat, lon);
+    }
+  }
+  for (const QPointF & p : persistent_pts_) {
+    double lat = 0, lon = 0;
+    if (scene_to_ll(p, lat, lon)) {
+      remap_persistent_ll_.emplace_back(lat, lon);
+    }
+  }
+}
+
+void PgmAssistController::endTileRemap(const LatLonToSceneFn & ll_to_scene)
+{
+  if (!remapping_ || !ll_to_scene) {
+    remapping_ = false;
+    return;
+  }
+  // Rebuild endpoints / controls from latlon
+  const bool had_draw = !end_points_.empty();
+  const bool had_persist = !persistent_pts_.empty();
+  clearPathItems(true);
+  if (had_persist) {
+    clearPersistentPath();
+  }
+
+  end_points_.clear();
+  control_points_.clear();
+  for (const auto & ll : remap_end_ll_) {
+    end_points_.push_back(ll_to_scene(ll.first, ll.second));
+  }
+  for (const auto & ll : remap_ctrl_ll_) {
+    control_points_.push_back(ll_to_scene(ll.first, ll.second));
+  }
+  // If control count mismatched, rebuild midpoints
+  if (control_points_.size() + 1 != end_points_.size() && end_points_.size() >= 2) {
+    control_points_.clear();
+    for (size_t i = 0; i + 1 < end_points_.size(); ++i) {
+      control_points_.push_back((end_points_[i] + end_points_[i + 1]) * 0.5);
+    }
+  }
+  rebuildPathGraphicsFromPoints();
+  updatePathPreview();
+
+  if (had_persist && !remap_persistent_ll_.empty()) {
+    std::vector<QPointF> pts;
+    pts.reserve(remap_persistent_ll_.size());
+    for (const auto & ll : remap_persistent_ll_) {
+      pts.push_back(ll_to_scene(ll.first, ll.second));
+    }
+    drawPersistentPath(pts);
+  }
+
+  remap_end_ll_.clear();
+  remap_ctrl_ll_.clear();
+  remap_persistent_ll_.clear();
+  remapping_ = false;
+}
+
+void PgmAssistController::rebuildPathGraphicsFromPoints()
+{
+  if (!scene_) {
+    return;
+  }
+  for (auto * it : end_items_) {
+    scene_->removeItem(it);
+    delete it;
+  }
+  end_items_.clear();
+  for (auto * it : control_items_) {
+    scene_->removeItem(it);
+    delete it;
+  }
+  control_items_.clear();
+
+  for (const QPointF & p : end_points_) {
+    end_items_.push_back(makeScreenHandle(
+      scene_, p, 8.0,
+      QPen(QColor(0, 200, 0)), QBrush(QColor(0, 255, 0, 220)), kZPathCtrl));
+  }
+  for (const QPointF & mid : control_points_) {
+    control_items_.push_back(makeScreenHandle(
+      scene_, mid, 12.0,
+      QPen(QColor(0, 160, 0), 1.5), QBrush(QColor(0, 255, 0, 160)), kZPathCtrl + 1));
+  }
 }
 
 void PgmAssistController::setToolMode(ToolMode mode)
@@ -294,19 +458,15 @@ void PgmAssistController::addPathEndpoint(const QPointF & p)
     return;
   }
   end_points_.push_back(p);
-  auto * end_item = scene_->addEllipse(
-    p.x() - 3, p.y() - 3, 6, 6, QPen(QColor(0, 255, 0)), QBrush(QColor(0, 255, 0, 200)));
-  end_item->setZValue(kZPathCtrl);
-  end_items_.push_back(end_item);
+  end_items_.push_back(makeScreenHandle(
+    scene_, p, 8.0,
+    QPen(QColor(0, 200, 0)), QBrush(QColor(0, 255, 0, 220)), kZPathCtrl));
   if (end_points_.size() >= 2) {
     const QPointF mid = (end_points_[end_points_.size() - 2] + end_points_.back()) * 0.5;
     control_points_.push_back(mid);
-    auto * cp = scene_->addEllipse(
-      mid.x() - 8, mid.y() - 8, 16, 16, QPen(QColor(0, 180, 0), 2), QBrush(QColor(0, 255, 0, 140)));
-    cp->setZValue(kZPathCtrl + 1);
-    cp->setFlag(QGraphicsItem::ItemIsSelectable, false);
-    cp->setAcceptedMouseButtons(Qt::NoButton);  // we handle drag in the view event filter
-    control_items_.push_back(cp);
+    control_items_.push_back(makeScreenHandle(
+      scene_, mid, 12.0,
+      QPen(QColor(0, 160, 0), 1.5), QBrush(QColor(0, 255, 0, 160)), kZPathCtrl + 1));
   }
   preview_enabled_ = true;
   updatePathPreview();
@@ -314,11 +474,15 @@ void PgmAssistController::addPathEndpoint(const QPointF & p)
 
 int PgmAssistController::hitTestControlPoint(const QPointF & scene_pt) const
 {
-  // Prefer control handles over endpoints / path stroke (radius ~10 scene px).
-  constexpr qreal kHitR = 10.0;
-  constexpr qreal kHitR2 = kHitR * kHitR;
+  // Hit radius in screen pixels → scene units via current view scale.
+  qreal scale = 1.0;
+  if (view_) {
+    scale = std::max<qreal>(0.05, std::abs(view_->transform().m11()));
+  }
+  const qreal hit_r = 10.0 / scale;  // ~10px on screen
+  const qreal hit_r2 = hit_r * hit_r;
   int best = -1;
-  qreal best_d2 = kHitR2;
+  qreal best_d2 = hit_r2;
   for (int i = 0; i < static_cast<int>(control_points_.size()); ++i) {
     const QPointF d = scene_pt - control_points_[i];
     const qreal d2 = QPointF::dotProduct(d, d);
@@ -337,7 +501,7 @@ void PgmAssistController::updateControlPoint(int index, const QPointF & pos)
   }
   control_points_[index] = pos;
   if (index < static_cast<int>(control_items_.size()) && control_items_[index]) {
-    control_items_[index]->setRect(pos.x() - 8, pos.y() - 8, 16, 16);
+    control_items_[index]->setPos(pos);
   }
   updatePathPreview();
 }
@@ -387,7 +551,9 @@ void PgmAssistController::updatePathPreview(const QPointF * cursor)
   for (size_t i = 1; i < pts.size(); ++i) {
     path.lineTo(pts[i]);
   }
-  preview_path_ = scene_->addPath(path, QPen(QColor(30, 120, 255), 1, Qt::DashLine));
+  QPen preview_pen(QColor(30, 120, 255), 1, Qt::DashLine);
+  preview_pen.setCosmetic(true);
+  preview_path_ = scene_->addPath(path, preview_pen);
   preview_path_->setZValue(kZPath);
 }
 
@@ -425,16 +591,17 @@ void PgmAssistController::redrawPersistentPath()
     for (size_t i = 1; i < persistent_pts_.size(); ++i) {
       path.lineTo(persistent_pts_[i]);
     }
-    persistent_path_ = scene_->addPath(path, QPen(QColor(200, 20, 20), 1));
+    QPen path_pen(QColor(200, 20, 20), 1);
+    path_pen.setCosmetic(true);
+    persistent_path_ = scene_->addPath(path, path_pen);
     persistent_path_->setZValue(kZPath);
   }
   if (show_points_) {
     for (size_t i = 0; i < persistent_pts_.size(); i += std::max(1, point_density_)) {
       const QPointF & pt = persistent_pts_[i];
-      auto * item = scene_->addEllipse(
-        pt.x() - 2, pt.y() - 2, 4, 4, QPen(QColor(20, 20, 200)), QBrush(QColor(20, 20, 200, 150)));
-      item->setZValue(kZPath - 50);
-      path_point_items_.push_back(item);
+      path_point_items_.push_back(makeScreenHandle(
+        scene_, pt, 5.0,
+        QPen(QColor(20, 20, 200)), QBrush(QColor(20, 20, 200, 150)), kZPath - 50));
     }
   }
   if (show_arrows_) {
@@ -448,14 +615,17 @@ void PgmAssistController::redrawPersistentPath()
         const QPointF d = pt - persistent_pts_[i - 1];
         yaw = std::atan2(d.y(), d.x());
       }
-      const double arrow_len = 8.0;
-      const double arrow_w = 4.0;
+      // Local triangle in device pixels; ItemIgnoresTransformations keeps size on zoom.
       QPolygonF poly;
-      poly << (pt + QPointF(std::cos(yaw) * arrow_len, std::sin(yaw) * arrow_len))
-           << (pt + QPointF(std::cos(yaw + M_PI / 2) * arrow_w, std::sin(yaw + M_PI / 2) * arrow_w))
-           << (pt + QPointF(std::cos(yaw - M_PI / 2) * arrow_w, std::sin(yaw - M_PI / 2) * arrow_w));
-      auto * item = scene_->addPolygon(poly, QPen(QColor(255, 0, 0)), QBrush(QColor(255, 0, 0, 200)));
+      poly << QPointF(6.0, 0.0) << QPointF(-3.5, 3.5) << QPointF(-3.5, -3.5);
+      auto * item = scene_->addPolygon(
+        poly, QPen(QColor(220, 0, 0), 1), QBrush(QColor(255, 0, 0, 200)));
+      item->setPos(pt);
+      item->setRotation(yaw * 180.0 / M_PI);
       item->setZValue(kZPath - 40);
+      item->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+      item->setFlag(QGraphicsItem::ItemIsSelectable, false);
+      item->setAcceptedMouseButtons(Qt::NoButton);
       path_arrow_items_.push_back(item);
     }
   }
@@ -487,7 +657,7 @@ void PgmAssistController::setArrowDensity(int n)
   redrawPersistentPath();
 }
 
-QPointF PgmAssistController::worldToScene(double x, double y) const
+QPointF PgmAssistController::worldToScenePgm(double x, double y) const
 {
   const double h = image_.isNull() ? 0.0 : static_cast<double>(image_.height());
   return QPointF(
@@ -495,11 +665,59 @@ QPointF PgmAssistController::worldToScene(double x, double y) const
     h - 1.0 - (y - origin_y_) / resolution_);
 }
 
-void PgmAssistController::sceneToWorld(const QPointF & scene_pt, double & x, double & y) const
+bool PgmAssistController::sceneToMapMeters(
+  const QPointF & scene_pt, double & x, double & y, QString & err) const
 {
-  const double h = image_.isNull() ? 0.0 : static_cast<double>(image_.height());
-  x = origin_x_ + scene_pt.x() * resolution_;
-  y = origin_y_ + (h - 1.0 - scene_pt.y()) * resolution_;
+  if (frame_mode_ == FrameMode::Pgm) {
+    double resolution = resolution_;
+    double ox = origin_x_;
+    double oy = origin_y_;
+    loadYamlBesideMap(resolution, ox, oy);
+    if (resolution <= 1e-9) {
+      err = QStringLiteral("Invalid PGM resolution");
+      return false;
+    }
+    const double h = image_.isNull() ? 0.0 : static_cast<double>(image_.height());
+    x = ox + scene_pt.x() * resolution;
+    y = oy + (h - 1.0 - scene_pt.y()) * resolution;
+    return true;
+  }
+  if (frame_mode_ == FrameMode::Tile) {
+    if (!tile_scene_to_map_) {
+      err = QStringLiteral("Tile converters not set");
+      return false;
+    }
+    return tile_scene_to_map_(scene_pt, x, y, err);
+  }
+  err = QStringLiteral("No map loaded for path conversion");
+  return false;
+}
+
+bool PgmAssistController::mapMetersToScene(
+  double x, double y, QPointF & scene_pt, QString & err) const
+{
+  if (frame_mode_ == FrameMode::Pgm) {
+    double resolution = resolution_;
+    double ox = origin_x_;
+    double oy = origin_y_;
+    loadYamlBesideMap(resolution, ox, oy);
+    if (resolution <= 1e-9 || image_.isNull()) {
+      err = QStringLiteral("Invalid PGM map for path load");
+      return false;
+    }
+    const double h = static_cast<double>(image_.height());
+    scene_pt = QPointF((x - ox) / resolution, h - 1.0 - (y - oy) / resolution);
+    return true;
+  }
+  if (frame_mode_ == FrameMode::Tile) {
+    if (!tile_map_to_scene_) {
+      err = QStringLiteral("Tile converters not set");
+      return false;
+    }
+    return tile_map_to_scene_(x, y, scene_pt, err);
+  }
+  err = QStringLiteral("No map loaded for path conversion");
+  return false;
 }
 
 bool PgmAssistController::loadYamlBesideMap(
@@ -572,27 +790,25 @@ std::vector<std::tuple<double, double, double>> PgmAssistController::resamplePat
 
 bool PgmAssistController::savePath(const QString & path, QString & error)
 {
+  if (!pathReady()) {
+    error = QStringLiteral("Load a PGM or tile map first");
+    return false;
+  }
   auto pts = samplePath(10);
   if (pts.size() < 2) {
     error = QStringLiteral("Need at least 2 path endpoints");
     return false;
   }
-  double resolution = resolution_;
-  double ox = origin_x_;
-  double oy = origin_y_;
-  loadYamlBesideMap(resolution, ox, oy);
 
   std::vector<std::tuple<double, double, double>> out;
   for (size_t i = 0; i + 1 < pts.size(); ++i) {
-    const int px = static_cast<int>(std::round(pts[i].x()));
-    const int py = static_cast<int>(std::round(pts[i].y()));
-    const int px2 = static_cast<int>(std::round(pts[i + 1].x()));
-    const int py2 = static_cast<int>(std::round(pts[i + 1].y()));
-    const double h = static_cast<double>(image_.height());
-    const double wx = ox + px * resolution;
-    const double wy = oy + (h - 1.0 - py) * resolution;
-    const double wx2 = ox + px2 * resolution;
-    const double wy2 = oy + (h - 1.0 - py2) * resolution;
+    double wx = 0, wy = 0, wx2 = 0, wy2 = 0;
+    if (!sceneToMapMeters(pts[i], wx, wy, error)) {
+      return false;
+    }
+    if (!sceneToMapMeters(pts[i + 1], wx2, wy2, error)) {
+      return false;
+    }
     out.emplace_back(wx, wy, std::atan2(wy2 - wy, wx2 - wx));
   }
   if (!out.empty()) {
@@ -614,16 +830,18 @@ bool PgmAssistController::savePath(const QString & path, QString & error)
   }
   outStream << "EOP\n";
   drawPersistentPath(pts);
-  emit statusMessage(QStringLiteral("已保存路径: %1").arg(path));
+  const QString mode =
+    (frame_mode_ == FrameMode::Pgm) ? QStringLiteral("PGM/YAML") : QStringLiteral("Tile/ENU");
+  emit statusMessage(QStringLiteral("已保存路径 (%1): %2").arg(mode, path));
   return true;
 }
 
 bool PgmAssistController::openPath(const QString & path, QString & error)
 {
-  double resolution = resolution_;
-  double ox = origin_x_;
-  double oy = origin_y_;
-  loadYamlBesideMap(resolution, ox, oy);
+  if (!pathReady()) {
+    error = QStringLiteral("Load a PGM or tile map first");
+    return false;
+  }
   QFile f(path);
   if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
     error = QStringLiteral("Cannot open path file");
@@ -631,7 +849,6 @@ bool PgmAssistController::openPath(const QString & path, QString & error)
   }
   QTextStream in(&f);
   std::vector<QPointF> pts;
-  const double h = static_cast<double>(image_.height());
   while (!in.atEnd()) {
     const QString line = in.readLine().trimmed();
     if (line == QLatin1String("EOP")) {
@@ -641,12 +858,24 @@ bool PgmAssistController::openPath(const QString & path, QString & error)
     if (parts.size() >= 2) {
       const double x = parts[0].toDouble();
       const double y = parts[1].toDouble();
-      pts.emplace_back((x - ox) / resolution, h - 1.0 - (y - oy) / resolution);
+      QPointF sp;
+      if (!mapMetersToScene(x, y, sp, error)) {
+        return false;
+      }
+      pts.push_back(sp);
     }
   }
   if (pts.empty()) {
     error = QStringLiteral("No path points in file");
     return false;
+  }
+  // Tile paths are dense in scene pixels after ENU→tile projection; thin out arrows.
+  if (frame_mode_ == FrameMode::Tile) {
+    arrow_density_ = 20;
+    if (arrow_density_spin_) {
+      QSignalBlocker blocker(arrow_density_spin_);
+      arrow_density_spin_->setValue(20);
+    }
   }
   drawPersistentPath(pts);
   emit statusMessage(QStringLiteral("已打开路径: %1 (%2 pts)").arg(path).arg(pts.size()));
@@ -699,7 +928,7 @@ void PgmAssistController::updateRobotPose(double x, double y, double yaw)
   if (!scene_ || image_.isNull()) {
     return;
   }
-  const QPointF p = worldToScene(x, y);
+  const QPointF p = worldToScenePgm(x, y);
   if (!robot_item_) {
     robot_item_ = scene_->addEllipse(
       p.x() - 5, p.y() - 5, 10, 10, QPen(QColor(255, 0, 0)), QBrush(QColor(255, 0, 0, 200)));
@@ -727,7 +956,7 @@ void PgmAssistController::updateScanPoints(const std::vector<QPointF> & world_pt
     return;
   }
   for (const auto & w : world_pts) {
-    const QPointF p = worldToScene(w.x(), w.y());
+    const QPointF p = worldToScenePgm(w.x(), w.y());
     auto * item = scene_->addEllipse(
       p.x() - 1, p.y() - 1, 2, 2, QPen(QColor(0, 255, 0)), QBrush(QColor(0, 255, 0, 150)));
     item->setZValue(kZScan);
@@ -742,7 +971,7 @@ void PgmAssistController::updateObstaclePoints(const std::vector<QPointF> & worl
     return;
   }
   for (const auto & w : world_pts) {
-    const QPointF p = worldToScene(w.x(), w.y());
+    const QPointF p = worldToScenePgm(w.x(), w.y());
     auto * item = scene_->addEllipse(
       p.x() - 2, p.y() - 2, 4, 4, QPen(QColor(255, 255, 0)), QBrush(QColor(255, 255, 0, 150)));
     item->setZValue(kZScan);
@@ -902,14 +1131,20 @@ void PgmAssistController::unsubscribeSpeed()
 
 bool PgmAssistController::eventFilter(QObject * obj, QEvent * event)
 {
-  if (!view_ || obj != view_->viewport() || image_.isNull()) {
+  if (!view_ || obj != view_->viewport()) {
     return QObject::eventFilter(obj, event);
   }
-  if (tool_mode_ == ToolMode::Idle) {
-    return QObject::eventFilter(obj, event);
+  if (tool_mode_ == ToolMode::Idle || !pathReady()) {
+    // Brush also requires PGM; handled below only when active.
+    if (tool_mode_ != ToolMode::Brush || !hasPgmMap()) {
+      return QObject::eventFilter(obj, event);
+    }
   }
 
   if (tool_mode_ == ToolMode::Brush) {
+    if (!hasPgmMap()) {
+      return QObject::eventFilter(obj, event);
+    }
     if (event->type() == QEvent::MouseButtonPress) {
       auto * me = static_cast<QMouseEvent *>(event);
       if (me->button() == Qt::LeftButton) {
@@ -1000,11 +1235,12 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
   lay->setContentsMargins(6, 6, 6, 6);
   lay->setSpacing(6);
 
-  QLabel * hint = new QLabel(
-    QStringLiteral("仅在已加载 PGM 时可用。画笔将占用点擦为 free(254)。"));
-  hint->setWordWrap(true);
-  hint->setStyleSheet(QStringLiteral("color:#546e7a; font-size:11px;"));
-  lay->addWidget(hint);
+  mode_hint_ = new QLabel(
+    QStringLiteral("路径：瓦片用 Origin ENU；PGM 用 YAML resolution/origin。\n"
+                   "画笔/ROS 叠加仅 PGM 可用。"));
+  mode_hint_->setWordWrap(true);
+  mode_hint_->setStyleSheet(QStringLiteral("color:#546e7a; font-size:11px;"));
+  lay->addWidget(mode_hint_);
 
   QHBoxLayout * toolRow = new QHBoxLayout();
   brush_btn_ = new QToolButton();
@@ -1023,7 +1259,7 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
     if (on) {
       if (!hasPgmMap()) {
         brush_btn_->setChecked(false);
-        emit statusMessage(QStringLiteral("请先加载 PGM 地图"));
+        emit statusMessage(QStringLiteral("画笔仅 PGM 地图可用"));
         return;
       }
       setToolMode(ToolMode::Brush);
@@ -1033,9 +1269,9 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
   });
   connect(path_btn_, &QToolButton::toggled, this, [this](bool on) {
     if (on) {
-      if (!hasPgmMap()) {
+      if (!pathReady()) {
         path_btn_->setChecked(false);
-        emit statusMessage(QStringLiteral("请先加载 PGM 地图"));
+        emit statusMessage(QStringLiteral("请先加载瓦片或 PGM 地图"));
         return;
       }
       setToolMode(ToolMode::PathDraw);
@@ -1045,6 +1281,8 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
   });
   connect(idleBtn, &QPushButton::clicked, this, [this]() { setToolMode(ToolMode::Idle); });
 
+  pgm_only_box_ = new QGroupBox(QStringLiteral("PGM 地图编辑"));
+  QVBoxLayout * pgmLay = new QVBoxLayout(pgm_only_box_);
   QHBoxLayout * brushRow = new QHBoxLayout();
   brushRow->addWidget(new QLabel(QStringLiteral("画笔尺寸")));
   brush_slider_ = new QSlider(Qt::Horizontal);
@@ -1052,14 +1290,14 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
   brush_slider_->setValue(brush_radius_);
   connect(brush_slider_, &QSlider::valueChanged, this, [this](int v) { setBrushRadius(v); });
   brushRow->addWidget(brush_slider_);
-  lay->addLayout(brushRow);
+  pgmLay->addLayout(brushRow);
 
   QHBoxLayout * editRow = new QHBoxLayout();
   QPushButton * undoBtn = new QPushButton(QStringLiteral("撤销擦除"));
   QPushButton * savePgmBtn = new QPushButton(QStringLiteral("保存 PGM"));
   editRow->addWidget(undoBtn);
   editRow->addWidget(savePgmBtn);
-  lay->addLayout(editRow);
+  pgmLay->addLayout(editRow);
   connect(undoBtn, &QPushButton::clicked, this, [this]() {
     if (!undoBrush()) {
       emit statusMessage(QStringLiteral("没有可撤销的擦除"));
@@ -1079,6 +1317,7 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
       QMessageBox::warning(nullptr, QStringLiteral("保存 PGM"), err);
     }
   });
+  lay->addWidget(pgm_only_box_);
 
   QHBoxLayout * pathRow = new QHBoxLayout();
   QPushButton * savePathBtn = new QPushButton(QStringLiteral("路径保存"));
@@ -1089,12 +1328,15 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
   pathRow->addWidget(clearPathBtn);
   lay->addLayout(pathRow);
   connect(savePathBtn, &QPushButton::clicked, this, [this]() {
-    if (!hasPgmMap()) {
+    if (!pathReady()) {
+      emit statusMessage(QStringLiteral("请先加载地图"));
       return;
     }
-    QFileInfo fi(map_path_);
+    QString suggest = map_path_.isEmpty()
+      ? QDir::homePath() + QStringLiteral("/cdf_path")
+      : QFileInfo(map_path_).absolutePath() + QStringLiteral("/cdf_path");
     const QString path = QFileDialog::getSaveFileName(
-      nullptr, QStringLiteral("保存路径"), fi.absolutePath() + "/cdf_path", QStringLiteral("Path (*)"));
+      nullptr, QStringLiteral("保存路径"), suggest, QStringLiteral("Path (*)"));
     if (path.isEmpty()) {
       return;
     }
@@ -1104,11 +1346,15 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
     }
   });
   connect(openPathBtn, &QPushButton::clicked, this, [this]() {
-    if (!hasPgmMap()) {
+    if (!pathReady()) {
+      emit statusMessage(QStringLiteral("请先加载地图"));
       return;
     }
+    const QString start = map_path_.isEmpty()
+      ? QDir::homePath()
+      : QFileInfo(map_path_).absolutePath();
     const QString path = QFileDialog::getOpenFileName(
-      nullptr, QStringLiteral("打开路径"), QFileInfo(map_path_).absolutePath(), QStringLiteral("Path (*)"));
+      nullptr, QStringLiteral("打开路径"), start, QStringLiteral("Path (*)"));
     if (path.isEmpty()) {
       return;
     }
@@ -1150,8 +1396,8 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
   connect(arrow_density_spin_, QOverload<int>::of(&QSpinBox::valueChanged),
           this, &PgmAssistController::setArrowDensity);
 
-  QGroupBox * rosBox = new QGroupBox(QStringLiteral("ROS2 叠加"));
-  QVBoxLayout * rosLay = new QVBoxLayout(rosBox);
+  ros_box_ = new QGroupBox(QStringLiteral("ROS2 叠加（仅 PGM）"));
+  QVBoxLayout * rosLay = new QVBoxLayout(ros_box_);
   topic_table_ = new QTableWidget(3, 3);
   topic_table_->setHorizontalHeaderLabels(
     {QStringLiteral("话题"), QStringLiteral("类型"), QStringLiteral("操作")});
@@ -1171,7 +1417,7 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
         return;
       }
       if (!hasPgmMap()) {
-        emit statusMessage(QStringLiteral("请先加载 PGM"));
+        emit statusMessage(QStringLiteral("ROS 叠加以 PGM 地图坐标系为准"));
         return;
       }
       const QString topic = topic_table_->item(row, 0)->text();
@@ -1226,7 +1472,7 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
 
   speed_plot_ = new SpeedPlot();
   rosLay->addWidget(speed_plot_);
-  lay->addWidget(rosBox);
+  lay->addWidget(ros_box_);
 
   log_text_ = new QTextEdit();
   log_text_->setReadOnly(true);
@@ -1240,5 +1486,40 @@ QWidget * PgmAssistController::createPanel(QWidget * parent)
   });
 
   lay->addStretch(1);
+  refreshPanelAvailability();
   return page;
+}
+
+void PgmAssistController::refreshPanelAvailability()
+{
+  const bool pgm = hasPgmMap();
+  const bool path_ok = pathReady();
+  if (brush_btn_) {
+    brush_btn_->setEnabled(pgm);
+    if (!pgm && brush_btn_->isChecked()) {
+      brush_btn_->setChecked(false);
+    }
+  }
+  if (path_btn_) {
+    path_btn_->setEnabled(path_ok);
+  }
+  if (pgm_only_box_) {
+    pgm_only_box_->setEnabled(pgm);
+  }
+  if (ros_box_) {
+    ros_box_->setEnabled(pgm);
+  }
+  if (mode_hint_) {
+    if (frame_mode_ == FrameMode::Pgm) {
+      mode_hint_->setText(
+        QStringLiteral("当前：PGM — 路径用 YAML 米制；可画笔 / ROS 叠加。"));
+    } else if (frame_mode_ == FrameMode::Tile) {
+      mode_hint_->setText(
+        QStringLiteral("当前：瓦片 — 路径用 Origin Lat/Lon 的 ENU 米制。\n"
+                       "画笔与 ROS 叠加请切到 PGM。"));
+    } else {
+      mode_hint_->setText(
+        QStringLiteral("请先加载瓦片或 PGM 地图后再绘制路径。"));
+    }
+  }
 }
