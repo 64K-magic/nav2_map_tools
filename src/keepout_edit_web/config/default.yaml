@@ -1,0 +1,7 @@
+# Frontend defaults (mirror keepout_edit_api / Qt GUI config)
+
+default_center_lat: 38.161479
+default_center_lon: -122.454630
+default_zoom: 18
+default_tile_url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{level}/{y}/{x}"
+api_base: ""

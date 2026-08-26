@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>禁行区绘制</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <header class="brand">
+      <h1>瓦片图禁行区</h1>
+    </header>
+
+    <section class="panel">
+      <h2>地图原点 (ENU)</h2>
+      <div class="field-grid cols-3">
+        <label>Lat <input id="originLat" type="number" step="any" /></label>
+        <label>Lon <input id="originLon" type="number" step="any" /></label>
+        <label>Yaw° <input id="originYaw" type="number" step="any" value="0" /></label>
+      </div>
+      <div class="row">
+        <button id="btnApplyDatum" class="btn secondary" title="用于保存时 lat/lon→map 米制转换，须与 Nav2 datum 一致">应用原点</button>
+        <button id="btnGoCenter" class="btn secondary">定位原点</button>
+        <button id="btnGps" class="btn secondary">GPS</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>导航地图</h2>
+      <label>MapName
+        <select id="mapNameSelect">
+          <option value="">— 从数据库选择 —</option>
+        </select>
+      </label>
+      <div class="row">
+        <button id="btnRefreshMaps" class="btn secondary" type="button">刷新列表</button>
+        <button id="btnDeleteMap" class="btn danger" type="button">删除地图</button>
+      </div>
+      <label>新地图名
+        <input id="mapNameCustom" type="text" placeholder="不在列表中时填写" />
+      </label>
+    </section>
+
+    <section class="panel">
+      <h2>绘制工具</h2>
+      <div class="tools" id="toolBar">
+        <button class="tool active" data-tool="select" title="选择/编辑">选</button>
+        <button class="tool" data-tool="line" title="线">线</button>
+        <button class="tool" data-tool="rectangle" title="矩形">矩</button>
+        <button class="tool" data-tool="polygon" title="不规则多边形">多</button>
+        <button class="tool" data-tool="circle" title="圆">圆</button>
+      </div>
+      <div class="row">
+        <button id="btnUndo" class="btn secondary">撤销</button>
+        <button id="btnClear" class="btn danger">清空</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Nav2 膨胀预览</h2>
+      <label class="check">
+        <input id="showInflationChk" type="checkbox" checked />
+        显示膨胀范围
+      </label>
+      <div class="field-grid">
+        <label>inscribed
+          <input id="inscribedRadius" type="number" min="0" max="5" step="0.05" value="0.40" title="inscribed_radius (m)" />
+        </label>
+        <label>inflation
+          <input id="inflationRadius" type="number" min="0" max="10" step="0.05" value="1.00" title="inflation_radius (m)" />
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>存储 / Nav2</h2>
+      <div class="row">
+        <button id="btnSave" class="btn primary">保存到 DB</button>
+        <button id="btnLoad" class="btn secondary">从 DB 加载</button>
+      </div>
+      <label class="check"><input id="notifyOnSave" type="checkbox" checked /> 保存后热刷新 Nav2</label>
+    </section>
+
+    <section class="panel status-panel">
+      <h2>状态</h2>
+      <pre id="status">就绪</pre>
+      <details id="figureListDetails" class="figure-details">
+        <summary id="figureListSummary">图形列表</summary>
+        <ul id="figureList" class="figure-list"></ul>
+      </details>
+    </section>
+  </aside>
+
+  <main id="map"></main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/draw/shapes.js"></script>
+  <script src="/js/draw/inflation.js"></script>
+  <script src="/js/draw/tools.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

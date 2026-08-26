@@ -1,0 +1,32 @@
+# keepout_edit_api defaults (aligned with map_coordinates_edit_gui)
+
+db_path: "~/gps_filter_ws/data/keepout.db"
+
+http:
+  host: "0.0.0.0"
+  port: 8088
+
+# Must match robot navsat_transform datum for costmap alignment
+default_origin:
+  lat: 38.161479
+  lon: -122.454630
+  yaw_deg: 0.0
+
+tile:
+  default_center_lat: 38.161479
+  default_center_lon: -122.454630
+  default_zoom: 18
+  # Esri World Imagery (XYZ). TianDiTu example commented below.
+  default_tile_url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{level}/{y}/{x}"
+  # default_tile_url: "https://t0.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={level}&TILEROW={y}&TILECOL={x}&tk=YOUR_KEY"
+
+ros:
+  from_ll_service: "/fromLL"
+  to_ll_service: "/toLL"
+  datum_service: "/datum"
+  gps_topic: "/gps/fix"
+  # Costmap plugin remaps relative "keepout_refresh" under the costmap node:
+  keepout_refresh_topic: "/global_costmap/keepout_refresh"
+  # Optional extras (list), e.g. if local_costmap also has keepout_filter:
+  # keepout_refresh_topics:
+  #   - "/local_costmap/keepout_refresh"
