@@ -17,8 +17,72 @@ class RobotTracker {
     }
     this.layer = L.layerGroup([], { pane: 'robotPane' }).addTo(map);
     this.footprintPoly = null;
-    this.headingLine = null;
-    this.centerMarker = null;
+    this.headingMarker = null;
+
+    map.on('zoomend', () => {
+      if (this.lastPose && this.lastPose.gps_ok) {
+        this.updateDisplay(this.lastPose);
+      }
+    });
+  }
+
+  /** Icon pixel size so the arrow fits inside the footprint bbox on screen. */
+  _inscribedIconPx(footprintLl) {
+    if (!footprintLl || footprintLl.length < 3) return 18;
+    const pts = footprintLl.map(([lat, lon]) =>
+      this.map.latLngToLayerPoint(L.latLng(lat, lon))
+    );
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    pts.forEach((p) => {
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+    });
+    const w = maxX - minX;
+    const h = maxY - minY;
+    // Triangle SVG spans ~83% of icon box; keep inside footprint with margin.
+    return Math.max(10, Math.min(w, h) * 0.62);
+  }
+
+  static _bearingDeg(from, to) {
+    const lat1 = (from[0] * Math.PI) / 180;
+    const lat2 = (to[0] * Math.PI) / 180;
+    const dLon = ((to[1] - from[1]) * Math.PI) / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x =
+      Math.cos(lat1) * Math.sin(lat2) -
+      Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+  }
+
+  static _headingSvg() {
+    return (
+      '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+      '<polygon points="24,2 44,42 24,30 4,42" fill="#ff2d4a"/>' +
+      '<polygon points="24,2 44,42 24,30" fill="#ff5569" opacity="0.9"/>' +
+      '<polygon points="24,2 4,42 24,30" fill="#d81835"/>' +
+      '<line x1="24" y1="2" x2="24" y2="30" stroke="#ffc8d0" stroke-width="1.2"/>' +
+      '<line x1="24" y1="2" x2="44" y2="42" stroke="#ffc8d0" stroke-width="0.9"/>' +
+      '<line x1="24" y1="2" x2="4" y2="42" stroke="#ffc8d0" stroke-width="0.9"/>' +
+      '</svg>'
+    );
+  }
+
+  _createHeadingIcon(bearingDeg, sizePx) {
+    const s = Math.round(sizePx || 18);
+    const half = s / 2;
+    return L.divIcon({
+      className: 'robot-heading-icon',
+      html:
+        `<div class="robot-heading-inner" style="width:${s}px;height:${s}px;transform:rotate(${bearingDeg}deg)">` +
+        `${RobotTracker._headingSvg()}</div>`,
+      iconSize: [s, s],
+      iconAnchor: [half, half],
+    });
   }
 
   setPollHz(hz) {
@@ -51,8 +115,7 @@ class RobotTracker {
   clearLayers() {
     this.layer.clearLayers();
     this.footprintPoly = null;
-    this.headingLine = null;
-    this.centerMarker = null;
+    this.headingMarker = null;
   }
 
   async _tick() {
@@ -90,23 +153,25 @@ class RobotTracker {
       }).addTo(this.layer);
     }
 
+    const iconPx = this._inscribedIconPx(pose.footprint_ll);
+
     if (pose.heading_ll && pose.heading_ll.length === 2) {
-      this.headingLine = L.polyline(pose.heading_ll, {
-        color: '#ffffff',
-        weight: 3,
-        opacity: 0.95,
+      const bearing = RobotTracker._bearingDeg(pose.heading_ll[0], pose.heading_ll[1]);
+      this.headingMarker = L.marker([pose.lat, pose.lon], {
+        icon: this._createHeadingIcon(bearing, iconPx),
         interactive: false,
+        zIndexOffset: 500,
+      }).addTo(this.layer);
+    } else if (pose.yaw_deg != null) {
+      const yawRad = (pose.yaw_deg * Math.PI) / 180;
+      const bearing =
+        ((Math.atan2(Math.cos(yawRad), Math.sin(yawRad)) * 180) / Math.PI + 360) % 360;
+      this.headingMarker = L.marker([pose.lat, pose.lon], {
+        icon: this._createHeadingIcon(bearing, iconPx),
+        interactive: false,
+        zIndexOffset: 500,
       }).addTo(this.layer);
     }
-
-    this.centerMarker = L.circleMarker([pose.lat, pose.lon], {
-      radius: 4,
-      color: '#ffffff',
-      weight: 2,
-      fillColor: '#00e676',
-      fillOpacity: 1,
-      interactive: false,
-    }).addTo(this.layer);
 
     if (this.follow) {
       this.map.panTo([pose.lat, pose.lon], { animate: true, duration: 0.25 });

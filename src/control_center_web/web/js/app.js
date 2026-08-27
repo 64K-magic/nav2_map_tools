@@ -129,6 +129,7 @@
       center,
       zoom,
       zoomControl: true,
+      attributionControl: false,
       doubleClickZoom: true,
     });
 
@@ -157,7 +158,6 @@
     if (tileLayer) map.removeLayer(tileLayer);
     tileLayer = L.tileLayer(tileUrlTemplate(url), {
       maxZoom: 22,
-      attribution: 'Tiles',
       crossOrigin: true,
     }).addTo(map);
   }

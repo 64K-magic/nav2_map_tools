@@ -228,6 +228,22 @@ select {
 
 .check input { width: auto; margin: 0; flex-shrink: 0; }
 
+.robot-heading-icon {
+  background: transparent;
+  border: none;
+}
+
+.robot-heading-inner {
+  transform-origin: center center;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+
+.robot-heading-inner svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 .check-row {
   align-items: center;
 }
@@ -318,6 +334,10 @@ input[type="number"]::-webkit-inner-spin-button {
 .leaflet-container {
   background: #111;
   font: inherit;
+}
+
+.leaflet-control-attribution {
+  display: none !important;
 }
 
 /* Map cursors by tool / edit mode */
