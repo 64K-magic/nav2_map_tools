@@ -180,6 +180,14 @@ class DrawController {
     });
   }
 
+  toMapList(mapName) {
+    return this.figures.map((f, i) => {
+      const payload = MapCoords.figureToMapApi(f.figure, mapName);
+      if (!payload.figure_name) payload.figure_name = `fig_${i + 1}`;
+      return payload;
+    });
+  }
+
   selectFigure(index) {
     this.selectedIndex = index;
     this.figures.forEach((f, i) => {
@@ -265,12 +273,16 @@ class DrawController {
         dashArray: '6 4',
       }).addTo(this.map);
     } else if (this.tool === 'circle') {
-      const r = KeepoutShapes.haversineM(a, ll);
+      const r = MapCoords.distanceM(a, ll);
+      const radius =
+        typeof MapCoords !== 'undefined' && MapCoords.isPgm()
+          ? MapCoords.circleDisplayRadius(Math.max(r, 0.5))
+          : Math.max(r, 0.5);
       this._preview = L.circle(a, {
         ...KeepoutShapes.STYLE,
         color: '#ffaa00',
         dashArray: '6 4',
-        radius: Math.max(r, 0.5),
+        radius,
       }).addTo(this.map);
     }
   }
@@ -333,7 +345,7 @@ class DrawController {
         figure_type: 'circle',
         figure_name: '',
         center_ll: start,
-        radius_m: Math.max(KeepoutShapes.haversineM(start, end), 0.5),
+        radius_m: Math.max(MapCoords.distanceM(start, end), 0.5),
       };
     }
     if (fig) this._commit(fig);
@@ -471,7 +483,7 @@ class DrawController {
     } else if (this._edit.mode === 'vertex') {
       KeepoutShapes.setVertex(fig, this._edit.index, ll);
     } else if (this._edit.mode === 'radius') {
-      fig.radius_m = Math.max(0.5, KeepoutShapes.haversineM(fig.center_ll, ll));
+      fig.radius_m = Math.max(0.5, MapCoords.distanceM(fig.center_ll, ll));
     } else if (this._edit.mode === 'rotate') {
       const c = KeepoutShapes.centroid(fig);
       const cPt = this.map.latLngToLayerPoint(L.latLng(c[0], c[1]));

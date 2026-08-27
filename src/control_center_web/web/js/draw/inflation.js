@@ -8,6 +8,13 @@ const InflationPreview = (() => {
   const ORANGE = { color: '#e67800', fillColor: '#ffa000', fillOpacity: 0.62, weight: 1 };
 
   function metersToPixels(map, meters, atLatLng) {
+    if (typeof MapCoords !== 'undefined' && MapCoords.isPgm()) {
+      return MapCoords.metersToPixels(map, meters, atLatLng);
+    }
+    return metersToPixelsTile(map, meters, atLatLng);
+  }
+
+  function metersToPixelsTile(map, meters, atLatLng) {
     if (!meters || meters < 1e-6) return 0;
     const p0 = map.latLngToLayerPoint(atLatLng);
     const p1 = map.latLngToLayerPoint(
@@ -158,8 +165,12 @@ const InflationPreview = (() => {
     for (let i = 0; i <= segments; i += 1) {
       const a = (2 * Math.PI * i) / segments;
       const br = (a * 180) / Math.PI;
-      outer.push(KeepoutShapes.destinationPoint(centerLl, br, Math.max(0, rOuterM)));
-      inner.push(KeepoutShapes.destinationPoint(centerLl, br, Math.max(0, rInnerM)));
+      const dest =
+        typeof MapCoords !== 'undefined' && MapCoords.isPgm()
+          ? MapCoords.destinationDisplayPoint.bind(MapCoords)
+          : KeepoutShapes.destinationPoint;
+      outer.push(dest(centerLl, br, Math.max(0, rOuterM)));
+      inner.push(dest(centerLl, br, Math.max(0, rInnerM)));
     }
     return { outer, inner };
   }
@@ -247,5 +258,5 @@ const InflationPreview = (() => {
     return out;
   }
 
-  return { layersForFigure, metersToPixels };
+  return { layersForFigure, metersToPixels, metersToPixelsTile };
 })();

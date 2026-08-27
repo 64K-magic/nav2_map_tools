@@ -36,3 +36,8 @@ ros:
 robot:
   footprint: "[[-0.67, -0.35], [-0.67, 0.35], [0.87, 0.35], [0.87, -0.35] ]"
   track_poll_hz: 5
+
+# Local PGM maps (map_server YAML + .pgm). Used by web PGM mode.
+# Uploads and map list scan this directory (same as map_coordinates_edit_gui).
+pgm:
+  maps_dir: "~/gps_filter_ws/src/map_coordinates_edit_gui/map"

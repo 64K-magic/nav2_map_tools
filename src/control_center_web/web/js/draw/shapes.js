@@ -13,11 +13,19 @@ const KeepoutShapes = (() => {
   const SELECT_STYLE = { color: '#ffaa00', weight: 3, fillColor: '#ffaa00', fillOpacity: 0.2 };
   const SELECT_LINE = { color: '#ffaa00', weight: 3, fill: false };
 
+  function circleRadius(figure) {
+    const r = figure.radius_m || 1;
+    if (typeof MapCoords !== 'undefined' && MapCoords.isPgm()) {
+      return MapCoords.circleDisplayRadius(r);
+    }
+    return r;
+  }
+
   function createLayer(figure) {
     const t = figure.figure_type;
     if (t === 'circle') {
       const [lat, lon] = figure.center_ll;
-      return L.circle([lat, lon], { ...STYLE, radius: figure.radius_m || 1 });
+      return L.circle([lat, lon], { ...STYLE, radius: circleRadius(figure) });
     }
     if (t === 'line') {
       return L.polyline(figure.vertices_ll, LINE_STYLE);
@@ -179,7 +187,7 @@ const KeepoutShapes = (() => {
   function updateLayerGeometry(layer, figure) {
     if (figure.figure_type === 'circle') {
       layer.setLatLng(figure.center_ll);
-      layer.setRadius(figure.radius_m);
+      layer.setRadius(circleRadius(figure));
     } else if (figure.figure_type === 'line') {
       layer.setLatLngs(figure.vertices_ll);
     } else {
@@ -192,7 +200,10 @@ const KeepoutShapes = (() => {
     if (figure.figure_type === 'circle') {
       const c = L.latLng(figure.center_ll[0], figure.center_ll[1]);
       const cPt = map.latLngToLayerPoint(c);
-      const rimLl = destinationPoint(figure.center_ll, 90, figure.radius_m);
+      const rimLl =
+        typeof MapCoords !== 'undefined' && MapCoords.isPgm()
+          ? MapCoords.destinationDisplayPoint(figure.center_ll, 90, figure.radius_m)
+          : destinationPoint(figure.center_ll, 90, figure.radius_m);
       const rimPt = map.latLngToLayerPoint(L.latLng(rimLl[0], rimLl[1]));
       return {
         center: cPt,

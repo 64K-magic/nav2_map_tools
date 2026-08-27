@@ -67,6 +67,7 @@ class RobotService:
         origin_lon: float,
         origin_yaw_deg: float = 0.0,
         use_ros: bool = True,
+        mode: str = 'tile',
     ) -> Dict[str, Any]:
         ros = self._ros
         if ros is None:
@@ -74,8 +75,12 @@ class RobotService:
                 'available': False,
                 'gps_ok': False,
                 'odom_ok': False,
+                'mode': mode,
                 'message': 'ROS bridge not available (start API with --ros)',
             }
+
+        if mode == 'pgm':
+            return self._get_pose_pgm(ros)
 
         gps = ros.get_gps_state()
         odom = ros.get_odom_state()
@@ -91,6 +96,7 @@ class RobotService:
                 'available': True,
                 'gps_ok': False,
                 'odom_ok': odom_ok,
+                'mode': 'tile',
                 'lat': gps.get('lat') if gps else None,
                 'lon': gps.get('lon') if gps else None,
                 'yaw_deg': math.degrees(odom['yaw_rad']) if odom_ok else None,
@@ -125,6 +131,7 @@ class RobotService:
                 'available': True,
                 'gps_ok': True,
                 'odom_ok': odom_ok,
+                'mode': 'tile',
                 'lat': lat,
                 'lon': lon,
                 'yaw_deg': math.degrees(yaw_rad),
@@ -163,6 +170,7 @@ class RobotService:
             'available': True,
             'gps_ok': True,
             'odom_ok': odom_ok,
+            'mode': 'tile',
             'lat': lat,
             'lon': lon,
             'yaw_deg': math.degrees(yaw_rad),
@@ -176,6 +184,59 @@ class RobotService:
             'footprint_map': footprint_map,
             'footprint_ll': footprint_ll,
             'heading_ll': heading_ll,
+            'message': '',
+        }
+
+    def _get_pose_pgm(self, ros) -> Dict[str, Any]:
+        odom = ros.get_odom_state()
+        odom_ok = bool(
+            odom
+            and math.isfinite(odom.get('x', float('nan')))
+            and math.isfinite(odom.get('y', float('nan')))
+            and math.isfinite(odom.get('yaw_rad', float('nan')))
+        )
+        if not odom_ok:
+            return {
+                'available': True,
+                'gps_ok': False,
+                'odom_ok': False,
+                'mode': 'pgm',
+                'lat': None,
+                'lon': None,
+                'yaw_deg': None,
+                'map_x': odom.get('x') if odom else None,
+                'map_y': odom.get('y') if odom else None,
+                'speed_mps': self._speed(odom),
+                'stamp_sec': odom.get('stamp', 0.0) if odom else 0.0,
+                'footprint_map': [],
+                'footprint_ll': [],
+                'heading_ll': [],
+                'message': 'Waiting for odom (map frame)',
+            }
+
+        map_x = float(odom['x'])
+        map_y = float(odom['y'])
+        yaw_rad = float(odom['yaw_rad'])
+        footprint_map = (
+            _rotate_footprint(self._footprint, map_x, map_y, yaw_rad)
+            if self._footprint
+            else []
+        )
+        return {
+            'available': True,
+            'gps_ok': False,
+            'odom_ok': True,
+            'mode': 'pgm',
+            'lat': None,
+            'lon': None,
+            'yaw_deg': math.degrees(yaw_rad),
+            'map_x': map_x,
+            'map_y': map_y,
+            'speed_mps': self._speed(odom),
+            'stamp_sec': odom.get('stamp', 0.0),
+            'footprint_map': footprint_map,
+            'footprint_ll': [],
+            'heading_ll': [],
             'message': '',
         }
 

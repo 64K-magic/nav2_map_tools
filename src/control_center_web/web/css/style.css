@@ -150,6 +150,43 @@ select {
   height: 26px;
 }
 
+input[type="file"] {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+input.readonly {
+  background: #121820;
+  color: #c5d4e3;
+  cursor: default;
+}
+
+input.mono {
+  font-family: "IBM Plex Mono", "Noto Sans Mono", ui-monospace, monospace;
+  font-size: 0.65rem;
+}
+
+.meta-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+
+.meta-label {
+  margin-bottom: 0;
+}
+
+.panel-hint {
+  margin: 4px 0 6px;
+  font-size: 0.62rem;
+  line-height: 1.4;
+  color: #546e7a;
+}
+
 select {
   cursor: pointer;
   appearance: auto;

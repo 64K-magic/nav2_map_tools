@@ -1,10 +1,12 @@
 /**
  * Robot pose overlay — footprint polygon + heading (RViz-style), polled from API.
+ * Tile mode: GPS lat/lon. PGM mode: odom map-frame via MapCoords.
  */
 class RobotTracker {
-  constructor(map, getOrigin) {
+  constructor(map, getOrigin, getMode = () => 'tile') {
     this.map = map;
     this.getOrigin = getOrigin;
+    this.getMode = getMode;
     this.pollMs = 200;
     this.timer = null;
     this.tracking = false;
@@ -20,10 +22,19 @@ class RobotTracker {
     this.headingMarker = null;
 
     map.on('zoomend', () => {
-      if (this.lastPose && this.lastPose.gps_ok) {
+      if (this.lastPose && this._poseOk(this.lastPose)) {
         this.updateDisplay(this.lastPose);
       }
     });
+  }
+
+  _isPgm() {
+    return this.getMode() === 'pgm' || (this.lastPose && this.lastPose.mode === 'pgm');
+  }
+
+  _poseOk(pose) {
+    if (this._isPgm()) return pose.odom_ok;
+    return pose.gps_ok;
   }
 
   /** Icon pixel size so the arrow fits inside the footprint bbox on screen. */
@@ -44,7 +55,6 @@ class RobotTracker {
     });
     const w = maxX - minX;
     const h = maxY - minY;
-    // Triangle SVG spans ~83% of icon box; keep inside footprint with margin.
     return Math.max(10, Math.min(w, h) * 0.62);
   }
 
@@ -121,8 +131,9 @@ class RobotTracker {
   async _tick() {
     if (!this.tracking) return;
     try {
+      const mode = this.getMode();
       const origin = this.getOrigin();
-      const pose = await KeepoutApi.robotPose(origin);
+      const pose = await KeepoutApi.robotPose(origin, true, mode);
       this.updateDisplay(pose);
     } catch (_) {
       /* ignore transient poll errors */
@@ -138,13 +149,29 @@ class RobotTracker {
       this._setInfo(pose, 'ROS 未启用');
       return;
     }
-    if (!pose.gps_ok) {
+
+    const pgm = pose.mode === 'pgm' || this.getMode() === 'pgm';
+    if (pgm && !pose.odom_ok) {
+      this._setInfo(pose, pose.message || '等待 odom (map frame) …');
+      return;
+    }
+    if (!pgm && !pose.gps_ok) {
       this._setInfo(pose, pose.message || '等待 /gps/fix …');
       return;
     }
 
-    if (pose.footprint_ll && pose.footprint_ll.length >= 3) {
-      this.footprintPoly = L.polygon(pose.footprint_ll, {
+    let centerLl;
+    let footprintLl;
+    if (pgm) {
+      centerLl = MapCoords.robotDisplayLatLng(pose);
+      footprintLl = MapCoords.footprintToDisplay(pose.footprint_map);
+    } else {
+      centerLl = [pose.lat, pose.lon];
+      footprintLl = pose.footprint_ll;
+    }
+
+    if (footprintLl && footprintLl.length >= 3) {
+      this.footprintPoly = L.polygon(footprintLl, {
         color: '#00e676',
         weight: 2,
         fillColor: '#00e676',
@@ -153,28 +180,28 @@ class RobotTracker {
       }).addTo(this.layer);
     }
 
-    const iconPx = this._inscribedIconPx(pose.footprint_ll);
-
-    if (pose.heading_ll && pose.heading_ll.length === 2) {
-      const bearing = RobotTracker._bearingDeg(pose.heading_ll[0], pose.heading_ll[1]);
-      this.headingMarker = L.marker([pose.lat, pose.lon], {
-        icon: this._createHeadingIcon(bearing, iconPx),
-        interactive: false,
-        zIndexOffset: 500,
-      }).addTo(this.layer);
+    const iconPx = this._inscribedIconPx(footprintLl);
+    let bearing = 0;
+    if (pgm && pose.yaw_deg != null) {
+      bearing = MapCoords.headingIconDeg(pose.yaw_deg);
+    } else if (pose.heading_ll && pose.heading_ll.length === 2) {
+      bearing = RobotTracker._bearingDeg(pose.heading_ll[0], pose.heading_ll[1]);
     } else if (pose.yaw_deg != null) {
       const yawRad = (pose.yaw_deg * Math.PI) / 180;
-      const bearing =
+      bearing =
         ((Math.atan2(Math.cos(yawRad), Math.sin(yawRad)) * 180) / Math.PI + 360) % 360;
-      this.headingMarker = L.marker([pose.lat, pose.lon], {
+    }
+
+    if (centerLl) {
+      this.headingMarker = L.marker(centerLl, {
         icon: this._createHeadingIcon(bearing, iconPx),
         interactive: false,
         zIndexOffset: 500,
       }).addTo(this.layer);
     }
 
-    if (this.follow) {
-      this.map.panTo([pose.lat, pose.lon], { animate: true, duration: 0.25 });
+    if (this.follow && centerLl) {
+      this.map.panTo(centerLl, { animate: true, duration: 0.25 });
     }
 
     this._setInfo(pose);
@@ -183,7 +210,9 @@ class RobotTracker {
   _setInfo(pose, extra) {
     const el = document.getElementById('robotInfo');
     if (!el) return;
-    if (!pose || !pose.gps_ok) {
+    const pgm = pose && (pose.mode === 'pgm' || this.getMode() === 'pgm');
+    const ok = pose && (pgm ? pose.odom_ok : pose.gps_ok);
+    if (!ok) {
       el.textContent = extra || '—';
       return;
     }
@@ -192,8 +221,15 @@ class RobotTracker {
     const my = pose.map_y != null ? pose.map_y.toFixed(2) : '—';
     const spd =
       pose.speed_mps != null ? `${pose.speed_mps.toFixed(2)} m/s` : '—';
-    const gpsTag = pose.gps_ok ? 'GPS ✓' : 'GPS ✗';
     const odomTag = pose.odom_ok ? 'Odom ✓' : 'Odom ✗';
+    if (pgm) {
+      el.textContent =
+        `Map x=${mx}  y=${my} m\n` +
+        `Yaw ${yaw}   Speed ${spd}\n` +
+        `${odomTag}`;
+      return;
+    }
+    const gpsTag = pose.gps_ok ? 'GPS ✓' : 'GPS ✗';
     el.textContent =
       `Lat ${pose.lat.toFixed(6)}\n` +
       `Lon ${pose.lon.toFixed(6)}\n` +

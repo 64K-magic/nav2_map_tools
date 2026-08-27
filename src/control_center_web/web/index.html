@@ -11,10 +11,20 @@
 <body>
   <aside class="sidebar">
     <header class="brand">
-      <h1>瓦片图禁行区</h1>
+      <h1 id="brandTitle">瓦片图禁行区</h1>
     </header>
 
     <section class="panel">
+      <h2>地图类型</h2>
+      <label>模式
+        <select id="mapModeSelect">
+          <option value="tile">瓦片地图 (GPS/RTK)</option>
+          <option value="pgm">PGM 地图 (map_server)</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="panel" id="originPanel">
       <h2>地图原点 (ENU)</h2>
       <div class="field-grid cols-3">
         <label>Lat <input id="originLat" type="number" step="any" /></label>
@@ -26,9 +36,38 @@
         <button id="btnGoCenter" class="btn secondary">定位原点</button>
         <button id="btnGps" class="btn secondary">GPS</button>
       </div>
+      <p class="panel-hint">瓦片模式：场景→经纬度→相对 Origin 的 ENU 米制。</p>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="pgmCoordPanel" style="display:none">
+      <h2>地图原点 (map)</h2>
+      <div class="field-grid">
+        <label>resolution <input id="pgmResolution" type="text" readonly class="readonly" /></label>
+        <label>origin yaw <input id="pgmOriginYaw" type="text" readonly class="readonly" /></label>
+        <label>origin Y <input id="pgmOriginY" type="text" readonly class="readonly" /></label>
+        <label>origin X <input id="pgmOriginX" type="text" readonly class="readonly" /></label>
+      </div>
+      <label class="meta-label">图像尺寸 <input id="pgmSize" type="text" readonly class="readonly" /></label>
+      <div class="row">
+        <button id="btnGoMapCenter" class="btn secondary" type="button">定位地图</button>
+      </div>
+      <p class="panel-hint">PGM 模式：用 resolution/origin 转到 map 米制。</p>
+    </section>
+
+    <section class="panel" id="pgmPanel" style="display:none">
+      <h2>PGM 地图</h2>
+      <label>选择地图
+        <select id="pgmMapSelect">
+          <option value="">— 选择 PGM 地图 —</option>
+        </select>
+      </label>
+      <div class="row">
+        <button id="btnRefreshPgm" class="btn secondary" type="button">刷新列表</button>
+        <button id="btnLoadPgm" class="btn primary" type="button">加载 PGM</button>
+      </div>
+    </section>
+
+    <section class="panel" id="tilePanel">
       <h2>导航地图</h2>
       <label>MapName
         <select id="mapNameSelect">
@@ -116,6 +155,7 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/js/api.js"></script>
+  <script src="/js/map_coords.js"></script>
   <script src="/js/draw/shapes.js"></script>
   <script src="/js/draw/inflation.js"></script>
   <script src="/js/robot.js"></script>

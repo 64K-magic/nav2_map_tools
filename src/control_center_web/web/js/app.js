@@ -1,10 +1,20 @@
 /**
- * Keepout Edit frontend — tile map + draw tools + API save/load.
+ * Keepout Edit frontend — tile map or PGM map + draw tools + API save/load.
  */
 (function () {
   const $ = (id) => document.getElementById(id);
   const statusEl = $('status');
   const figureList = $('figureList');
+
+  let mapMode = 'tile';
+  let pgmMeta = null;
+  let map;
+  let tileLayer;
+  let pgmLayer;
+  let drawer;
+  let gpsMarker;
+  let robotTracker;
+  let appCfg = {};
 
   function setStatus(msg) {
     statusEl.textContent = msg;
@@ -18,7 +28,19 @@
     };
   }
 
+  function getMapMode() {
+    const sel = $('mapModeSelect');
+    return sel ? sel.value : mapMode;
+  }
+
+  function isTileMode() {
+    return getMapMode() === 'tile';
+  }
+
   function requireMapName() {
+    if (getMapMode() === 'pgm' && pgmMeta && pgmMeta.name) {
+      return pgmMeta.name;
+    }
     const custom = ($('mapNameCustom').value || '').trim();
     if (custom) return custom;
     const selected = ($('mapNameSelect').value || '').trim();
@@ -64,19 +86,88 @@
     }
   }
 
+  async function refreshPgmMapOptions(prefer) {
+    const sel = $('pgmMapSelect');
+    if (!sel) return [];
+    sel.innerHTML = '<option value="">— 选择 PGM 地图 —</option>';
+    try {
+      const maps = await KeepoutApi.listPgmMaps();
+      (maps || []).forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = m.name;
+        opt.textContent = `${m.name} (${m.width}×${m.height})`;
+        sel.appendChild(opt);
+      });
+      if (prefer) sel.value = prefer;
+      return maps || [];
+    } catch (e) {
+      setStatus('PGM 列表失败: ' + e.message);
+      return [];
+    }
+  }
+
   function tileUrlTemplate(url) {
-    // Leaflet uses {z}/{x}/{y}; GUI used {level}
     return url.replace(/\{level\}/g, '{z}');
   }
 
-  let map;
-  let tileLayer;
-  let drawer;
-  let gpsMarker;
-  let robotTracker;
+  function fillPgmCoordPanel(meta) {
+    const set = (id, val) => {
+      const el = $(id);
+      if (el) el.value = val != null && val !== '' ? String(val) : '';
+    };
+    if (!meta) {
+      ['pgmResolution', 'pgmOriginX', 'pgmOriginY', 'pgmOriginYaw', 'pgmSize'].forEach(
+        (id) => set(id, '')
+      );
+      return;
+    }
+    const origin = meta.origin || [];
+    set('pgmResolution', meta.resolution);
+    set('pgmOriginX', meta.origin_x != null ? meta.origin_x : origin[0]);
+    set('pgmOriginY', meta.origin_y != null ? meta.origin_y : origin[1]);
+    set('pgmOriginYaw', meta.origin_yaw != null ? meta.origin_yaw : origin[2]);
+    set('pgmSize', `${meta.width} × ${meta.height} px`);
+  }
+
+  function updateModePanels() {
+    const tile = isTileMode();
+    $('originPanel').style.display = tile ? '' : 'none';
+    $('pgmCoordPanel').style.display = tile ? 'none' : '';
+    $('pgmPanel').style.display = tile ? 'none' : '';
+    if ($('tilePanel')) $('tilePanel').style.display = '';
+    $('brandTitle').textContent = tile ? '瓦片图禁行区' : 'PGM 地图禁行区';
+    if (!tile && !pgmMeta) {
+      fillPgmCoordPanel(null);
+    }
+  }
+
+  function destroyMapLayers() {
+    if (robotTracker) {
+      robotTracker.stop();
+      robotTracker = null;
+    }
+    if (drawer) {
+      drawer.clear();
+      drawer = null;
+    }
+    if (map) {
+      map.remove();
+      map = null;
+    }
+    tileLayer = null;
+    pgmLayer = null;
+    gpsMarker = null;
+  }
+
+  function attachDrawer() {
+    drawer = new DrawController(map, refreshFigureList);
+    drawer.bind();
+    applyInflationFromUi();
+    refreshFigureList();
+  }
 
   async function initRobotTracking(cfg, health) {
-    robotTracker = new RobotTracker(map, origin);
+    robotTracker = new RobotTracker(map, origin, getMapMode);
     const robotCfg = (cfg && cfg.robot) || {};
     if (robotCfg.track_poll_hz) {
       robotTracker.setPollHz(robotCfg.track_poll_hz);
@@ -85,40 +176,32 @@
     const trackChk = $('trackRobotChk');
     const followChk = $('followRobotChk');
 
-    trackChk.addEventListener('change', () => {
+    trackChk.onchange = () => {
       if (trackChk.checked) robotTracker.start();
       else robotTracker.stop();
-    });
-    followChk.addEventListener('change', () => {
+    };
+    followChk.onchange = () => {
       robotTracker.setFollow(followChk.checked);
-    });
+    };
 
     if (health && health.ros_enabled && trackChk.checked) {
       robotTracker.start();
     }
   }
 
-  async function init() {
-    let cfg = {};
-    let health = null;
-    try {
-      cfg = await KeepoutApi.config();
-      health = await KeepoutApi.health();
-      setStatus('已连接 API' + (health.ros_enabled ? ' · ROS' : ''));
-    } catch (e) {
-      setStatus('API 未就绪: ' + e.message + '（可先启动 control_center_api）');
-    }
+  function initTileMap(cfg) {
+    destroyMapLayers();
+    mapMode = 'tile';
+    pgmMeta = null;
+    MapCoords.setTileMode();
+    fillPgmCoordPanel(null);
+    updateModePanels();
 
     const originCfg = cfg.default_origin || {};
     const tileCfg = cfg.tile || {};
-    $('originLat').value = originCfg.lat != null ? originCfg.lat : 38.161479;
-    $('originLon').value = originCfg.lon != null ? originCfg.lon : -122.454630;
-    $('originYaw').value = originCfg.yaw_deg != null ? originCfg.yaw_deg : 0;
-
     const defaultTileUrl =
       tileCfg.default_tile_url ||
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{level}/{y}/{x}';
-
     const center = [
       tileCfg.default_center_lat != null ? tileCfg.default_center_lat : originCfg.lat || 38.161479,
       tileCfg.default_center_lon != null ? tileCfg.default_center_lon : originCfg.lon || -122.454630,
@@ -132,17 +215,66 @@
       attributionControl: false,
       doubleClickZoom: true,
     });
-
     setTileLayer(defaultTileUrl);
+    attachDrawer();
+  }
 
-    drawer = new DrawController(map, refreshFigureList);
-    drawer.bind();
+  function setTileLayer(url) {
+    if (tileLayer) map.removeLayer(tileLayer);
+    tileLayer = L.tileLayer(tileUrlTemplate(url), {
+      maxZoom: 22,
+      crossOrigin: true,
+    }).addTo(map);
+  }
 
-    wireUi();
-    refreshFigureList();
-    applyInflationFromUi();
-    await refreshMapNameOptions();
-    await initRobotTracking(cfg, health);
+  async function loadPgmMap(name) {
+    if (!name) throw new Error('请选择 PGM 地图');
+    const meta = await KeepoutApi.getPgmMap(name);
+    destroyMapLayers();
+    mapMode = 'pgm';
+    pgmMeta = meta;
+    MapCoords.setPgmMode(meta);
+    fillPgmCoordPanel(meta);
+    updateModePanels();
+
+    const h = meta.height;
+    const w = meta.width;
+    map = L.map('map', {
+      crs: L.CRS.Simple,
+      minZoom: -3,
+      maxZoom: 5,
+      zoomControl: true,
+      attributionControl: false,
+      doubleClickZoom: true,
+    });
+    // Keep PGM under inflation (350) / keepout (400) / robot (450) panes.
+    if (!map.getPane('pgmPane')) {
+      map.createPane('pgmPane');
+      map.getPane('pgmPane').style.zIndex = 200;
+    }
+    const bounds = [
+      [0, 0],
+      [h, w],
+    ];
+    pgmLayer = L.imageOverlay(KeepoutApi.pgmImageUrl(name), bounds, {
+      pane: 'pgmPane',
+      interactive: false,
+    }).addTo(map);
+    map.fitBounds(bounds);
+    map.setMaxBounds(
+      L.latLngBounds(
+        L.latLng(-h * 0.05, -w * 0.05),
+        L.latLng(h * 1.05, w * 1.05)
+      )
+    );
+
+    $('mapNameCustom').value = name;
+    $('mapNameSelect').value = '';
+    attachDrawer();
+
+    const health = await KeepoutApi.health().catch(() => null);
+    await initRobotTracking(appCfg, health);
+    setStatus(`已加载 PGM: ${name} (${w}×${h}, res=${meta.resolution})`);
   }
 
   function applyInflationFromUi() {
@@ -154,16 +286,9 @@
     );
   }
 
-  function setTileLayer(url) {
-    if (tileLayer) map.removeLayer(tileLayer);
-    tileLayer = L.tileLayer(tileUrlTemplate(url), {
-      maxZoom: 22,
-      crossOrigin: true,
-    }).addTo(map);
-  }
-
   function refreshFigureList(selectedIdx) {
     figureList.innerHTML = '';
+    if (!drawer) return;
     const n = drawer.figures.length;
     const summary = $('figureListSummary');
     if (summary) {
@@ -206,9 +331,9 @@
       });
     });
 
-    $('btnUndo').onclick = () => drawer.undo();
+    $('btnUndo').onclick = () => drawer && drawer.undo();
     $('btnClear').onclick = () => {
-      if (confirm('清空当前所有图形？')) drawer.clear();
+      if (drawer && confirm('清空当前所有图形？')) drawer.clear();
     };
 
     $('showInflationChk').addEventListener('change', applyInflationFromUi);
@@ -217,7 +342,51 @@
     $('inflationRadius').addEventListener('change', applyInflationFromUi);
     $('inflationRadius').addEventListener('input', applyInflationFromUi);
 
+    $('mapModeSelect').addEventListener('change', async () => {
+      const mode = $('mapModeSelect').value;
+      if (mode === 'tile') {
+        initTileMap(appCfg);
+        const health = await KeepoutApi.health().catch(() => null);
+        await initRobotTracking(appCfg, health);
+        setStatus('已切换到瓦片地图模式');
+        return;
+      }
+      mapMode = 'pgm';
+      await refreshPgmMapOptions();
+      updateModePanels();
+      if (robotTracker) {
+        robotTracker.stop();
+        robotTracker.start();
+      }
+      setStatus('PGM 模式：选择地图后点击「加载 PGM」');
+    });
+
+    $('btnLoadPgm').onclick = async () => {
+      try {
+        const name = ($('pgmMapSelect').value || '').trim();
+        await loadPgmMap(name);
+        await refreshMapNameOptions(name);
+      } catch (e) {
+        setStatus('加载 PGM 失败: ' + e.message);
+      }
+    };
+
+    $('btnRefreshPgm').onclick = () => refreshPgmMapOptions($('pgmMapSelect').value);
+
+    $('btnGoMapCenter').onclick = () => {
+      if (getMapMode() === 'pgm' && pgmMeta && map) {
+        map.fitBounds([
+          [0, 0],
+          [pgmMeta.height, pgmMeta.width],
+        ]);
+      }
+    };
+
     $('btnGoCenter').onclick = () => {
+      if (getMapMode() === 'pgm' && pgmMeta) {
+        $('btnGoMapCenter').click();
+        return;
+      }
       const o = origin();
       map.setView([o.lat, o.lon], map.getZoom());
     };
@@ -225,9 +394,9 @@
     $('btnRefreshMaps').onclick = () => refreshMapNameOptions();
 
     $('btnDeleteMap').onclick = async () => {
-      const name = ($('mapNameSelect').value || '').trim();
+      const name = ($('mapNameSelect').value || '').trim() || ($('mapNameCustom').value || '').trim();
       if (!name) {
-        setStatus('请先在下拉框中选择要删除的地图');
+        setStatus('请先选择或填写地图名');
         return;
       }
       if (!confirm(`确定从数据库删除地图「${name}」下的全部禁行区？此操作不可恢复。`)) {
@@ -262,10 +431,8 @@
         setStatus('原点无效：请填写有效的 Lat / Lon');
         return;
       }
-      // Save/Load always use these fields for local ENU — no ROS required.
       map.setView([o.lat, o.lon], map.getZoom());
       let msg = `原点已应用 ${o.lat.toFixed(6)}, ${o.lon.toFixed(6)} (yaw ${o.yaw_deg}°)`;
-      // Optional: if API started with --ros, also push SetDatum
       try {
         const health = await KeepoutApi.health();
         if (health && health.navsat_ready) {
@@ -273,7 +440,7 @@
           msg += '；' + (r.message || 'SetDatum OK');
         }
       } catch (_) {
-        /* ignore — pure Python mode */
+        /* ignore */
       }
       setStatus(msg);
     };
@@ -294,7 +461,9 @@
         }).addTo(map);
         map.setView([g.lat, g.lon]);
         setStatus(`GPS ${g.lat.toFixed(6)}, ${g.lon.toFixed(6)}`);
-        if (robotTracker) robotTracker.updateDisplay({ available: true, gps_ok: true, lat: g.lat, lon: g.lon });
+        if (robotTracker) {
+          robotTracker.updateDisplay({ available: true, gps_ok: true, lat: g.lat, lon: g.lon, mode: 'tile' });
+        }
       } catch (e) {
         setStatus('GPS: ' + e.message);
       }
@@ -303,13 +472,22 @@
     $('btnSave').onclick = async () => {
       try {
         const mapName = requireMapName();
+        const notify = $('notifyOnSave').checked;
+        if (getMapMode() === 'pgm') {
+          const figures = drawer.toMapList(mapName);
+          if (!figures.length) throw new Error('没有可保存的图形');
+          const r = await KeepoutApi.saveMap(mapName, figures, notify);
+          await refreshMapNameOptions(mapName);
+          setStatus(r.message || `已保存 ${r.count} 个图形`);
+          return;
+        }
         const figures = drawer.toWgs84List();
         if (!figures.length) throw new Error('没有可保存的图形');
         const r = await KeepoutApi.saveWgs84(mapName, {
           origin: origin(),
           figures,
           use_ros: true,
-          notify_nav2: $('notifyOnSave').checked,
+          notify_nav2: notify,
         });
         await refreshMapNameOptions(mapName);
         setStatus(r.message || `已保存 ${r.count} 个图形`);
@@ -321,6 +499,13 @@
     $('btnLoad').onclick = async () => {
       try {
         const mapName = requireMapName();
+        if (getMapMode() === 'pgm') {
+          const raw = await KeepoutApi.loadMap(mapName);
+          const list = (raw || []).map((f) => MapCoords.figureFromMapApi(f));
+          drawer.loadFigures(list);
+          setStatus(`已加载 ${list.length} 个图形 (${mapName})`);
+          return;
+        }
         const list = await KeepoutApi.loadWgs84(mapName, {
           origin: origin(),
           use_ros: true,
@@ -331,6 +516,29 @@
         setStatus('加载失败: ' + e.message);
       }
     };
+  }
+
+  async function init() {
+    let health = null;
+    try {
+      appCfg = await KeepoutApi.config();
+      health = await KeepoutApi.health();
+      setStatus('已连接 API' + (health.ros_enabled ? ' · ROS' : ''));
+    } catch (e) {
+      setStatus('API 未就绪: ' + e.message + '（可先启动 control_center_api）');
+      appCfg = {};
+    }
+
+    const originCfg = appCfg.default_origin || {};
+    $('originLat').value = originCfg.lat != null ? originCfg.lat : 38.161479;
+    $('originLon').value = originCfg.lon != null ? originCfg.lon : -122.454630;
+    $('originYaw').value = originCfg.yaw_deg != null ? originCfg.yaw_deg : 0;
+
+    initTileMap(appCfg);
+    wireUi();
+    await refreshMapNameOptions();
+    await refreshPgmMapOptions();
+    await initRobotTracking(appCfg, health);
   }
 
   init();

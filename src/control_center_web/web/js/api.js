@@ -33,6 +33,17 @@ const KeepoutApi = (() => {
         { method: 'DELETE' }
       ),
     loadMap: (mapName) => request(`/api/maps/${encodeURIComponent(mapName)}/keepouts`),
+    saveMap: (mapName, figures, notifyNav2 = false) =>
+      request(
+        `/api/maps/${encodeURIComponent(mapName)}/keepouts?notify_nav2=${notifyNav2 ? 'true' : 'false'}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ figures }),
+        }
+      ),
+    listPgmMaps: () => request('/api/pgm/maps'),
+    getPgmMap: (name) => request(`/api/pgm/maps/${encodeURIComponent(name)}`),
+    pgmImageUrl: (name) => base() + `/api/pgm/maps/${encodeURIComponent(name)}/image.png`,
     saveWgs84: (mapName, payload) =>
       request(`/api/maps/${encodeURIComponent(mapName)}/keepouts/wgs84`, {
         method: 'POST',
@@ -54,12 +65,13 @@ const KeepoutApi = (() => {
         body: JSON.stringify({ lat, lon, yaw_deg }),
       }),
     gps: () => request('/api/gps'),
-    robotPose: (origin, useRos = true) => {
+    robotPose: (origin, useRos = true, mode = 'tile') => {
       const q = new URLSearchParams({
         lat: String(origin.lat),
         lon: String(origin.lon),
         yaw_deg: String(origin.yaw_deg || 0),
         use_ros: useRos ? 'true' : 'false',
+        mode,
       });
       return request(`/api/robot/pose?${q.toString()}`);
     },

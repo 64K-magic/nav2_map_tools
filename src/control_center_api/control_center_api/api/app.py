@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from control_center_api.api.schemas import (
@@ -23,7 +23,7 @@ from control_center_api.api.schemas import (
     SetDatumRequest,
 )
 from control_center_api.models import Figure, Point2D
-from control_center_api.services import ConvertService, KeepoutService, RobotService
+from control_center_api.services import ConvertService, KeepoutService, PgmService, RobotService
 
 
 def _figure_to_map_model(f: Figure) -> FigureMapModel:
@@ -56,13 +56,14 @@ def create_app(
     keepout_service: KeepoutService,
     convert_service: ConvertService,
     robot_service: Optional[RobotService] = None,
+    pgm_service: Optional[PgmService] = None,
     config: Optional[Dict[str, Any]] = None,
     web_root: Optional[Path] = None,
 ) -> FastAPI:
     app = FastAPI(
         title='Control Center API',
         version='0.1.0',
-        description='RTK tile-map keepout draw → map meters → SQLite for Nav2 filter_keepout',
+        description='RTK tile-map / PGM keepout draw → map meters → SQLite for Nav2 filter_keepout',
     )
     app.add_middleware(
         CORSMiddleware,
@@ -74,6 +75,7 @@ def create_app(
     app.state.keepout = keepout_service
     app.state.convert = convert_service
     app.state.robot = robot_service
+    app.state.pgm = pgm_service
     app.state.config = config or {}
 
     @app.get('/api/health')
@@ -97,6 +99,7 @@ def create_app(
         return {
             'default_origin': cfg.get('default_origin', {}),
             'tile': cfg.get('tile', {}),
+            'pgm': cfg.get('pgm', {}),
             'db_path': keepout_service.db.db_path,
             'robot': {
                 'footprint': robot_service.footprint if robot_service else [],
@@ -128,12 +131,53 @@ def create_app(
             raise HTTPException(400, str(e)) from e
 
     @app.put('/api/maps/{map_name}/keepouts', response_model=ApiMessage)
-    def replace_keepouts(map_name: str, body: ReplaceMapFiguresRequest):
+    def replace_keepouts(map_name: str, body: ReplaceMapFiguresRequest, notify_nav2: bool = False):
         try:
             figs = [_map_model_to_figure(m, map_name) for m in body.figures]
             n = keepout_service.replace_map_figures(map_name, figs)
-            return ApiMessage(ok=True, message=f'Replaced {n} figures for {map_name}', count=n)
+            if notify_nav2:
+                keepout_service.notify_nav2(map_name)
+            extra = ' + keepout_refresh' if notify_nav2 else ''
+            return ApiMessage(ok=True, message=f'Replaced {n} figures for {map_name}{extra}', count=n)
         except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get('/api/pgm/config')
+    def get_pgm_config():
+        if pgm_service is None:
+            return {'maps_dir': '', 'configured': False}
+        return {
+            'maps_dir': str(pgm_service.maps_dir),
+            'configured': True,
+        }
+
+    @app.get('/api/pgm/maps')
+    def list_pgm_maps():
+        if pgm_service is None:
+            return []
+        return [m.to_dict() for m in pgm_service.list_maps()]
+
+    @app.get('/api/pgm/maps/{name}')
+    def get_pgm_map(name: str):
+        if pgm_service is None:
+            raise HTTPException(503, 'PGM maps directory not configured')
+        try:
+            return pgm_service.load_map(name).to_dict()
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except (ValueError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.get('/api/pgm/maps/{name}/image.png')
+    def get_pgm_image(name: str):
+        if pgm_service is None:
+            raise HTTPException(503, 'PGM maps directory not configured')
+        try:
+            png = pgm_service.load_png(name)
+            return Response(content=png, media_type='image/png')
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except (ValueError, OSError) as e:
             raise HTTPException(400, str(e)) from e
 
     @app.post('/api/maps/{map_name}/keepouts/wgs84', response_model=ApiMessage)
@@ -249,19 +293,21 @@ def create_app(
 
     @app.get('/api/robot/pose')
     def robot_pose(
-        lat: float,
-        lon: float,
+        lat: float = 0.0,
+        lon: float = 0.0,
         yaw_deg: float = 0.0,
         use_ros: bool = True,
+        mode: str = 'tile',
     ):
         if robot_service is None:
             return {
                 'available': False,
                 'gps_ok': False,
                 'odom_ok': False,
+                'mode': mode,
                 'message': 'ROS bridge not available (start API with --ros)',
             }
-        return robot_service.get_pose(lat, lon, yaw_deg, use_ros=use_ros)
+        return robot_service.get_pose(lat, lon, yaw_deg, use_ros=use_ros, mode=mode)
 
     if web_root and web_root.is_dir():
         # colcon --symlink-install uses symlinks; Starlette blocks them unless enabled.

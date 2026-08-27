@@ -14,7 +14,7 @@ import yaml
 
 from control_center_api.api import create_app
 from control_center_api.db import KeepoutDatabase
-from control_center_api.services import ConvertService, KeepoutService, RobotService, parse_footprint
+from control_center_api.services import ConvertService, KeepoutService, PgmService, RobotService, parse_footprint
 
 logger = logging.getLogger('control_center_api')
 
@@ -147,13 +147,18 @@ def main(argv: Optional[list] = None) -> None:
     robot_cfg = cfg.get('robot', {})
     footprint = parse_footprint(robot_cfg.get('footprint'))
     robot = RobotService(ros=ros_bridge, convert=convert, footprint=footprint)
+    pgm_cfg = cfg.get('pgm', {})
+    pgm_dir = pgm_cfg.get('maps_dir')
+    pgm = PgmService(pgm_dir) if pgm_dir else None
+    if pgm is not None:
+        logger.info('PGM maps dir: %s', pgm.maps_dir)
     web_root = resolve_web_root()
     if web_root is None:
         logger.warning('Frontend web root not found; API only (no / page)')
     else:
         logger.info('Serving frontend from %s', web_root)
 
-    app = create_app(keepout, convert, robot_service=robot, config=cfg, web_root=web_root)
+    app = create_app(keepout, convert, robot_service=robot, pgm_service=pgm, config=cfg, web_root=web_root)
     logger.info('Control Center API http://%s:%s  DB=%s', host, port, db.db_path)
 
     try:
