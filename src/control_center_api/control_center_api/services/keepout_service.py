@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import List, Optional, Sequence
 
-from keepout_edit_api.db.keepout_db import KeepoutDatabase
-from keepout_edit_api.models import Figure
-from keepout_edit_api.ros.bridge import RosBridge
-from keepout_edit_api.services.convert_service import ConvertService
+from control_center_api.db.keepout_db import KeepoutDatabase
+from control_center_api.models import Figure
+from control_center_api.ros.bridge import RosBridge
+from control_center_api.services.convert_service import ConvertService
 
 
 class KeepoutService:

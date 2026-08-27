@@ -1,5 +1,5 @@
 /**
- * HTTP client for keepout_edit_api.
+ * HTTP client for control_center_api.
  */
 const KeepoutApi = (() => {
   const base = () => (window.KEEPOUT_API_BASE || '');
@@ -54,5 +54,14 @@ const KeepoutApi = (() => {
         body: JSON.stringify({ lat, lon, yaw_deg }),
       }),
     gps: () => request('/api/gps'),
+    robotPose: (origin, useRos = true) => {
+      const q = new URLSearchParams({
+        lat: String(origin.lat),
+        lon: String(origin.lon),
+        yaw_deg: String(origin.yaw_deg || 0),
+        use_ros: useRos ? 'true' : 'false',
+      });
+      return request(`/api/robot/pose?${q.toString()}`);
+    },
   };
 })();

@@ -1,4 +1,4 @@
-# Frontend defaults (mirror keepout_edit_api / Qt GUI config)
+# Frontend defaults (mirror control_center_api / Qt GUI config)
 
 default_center_lat: 38.161479
 default_center_lon: -122.454630

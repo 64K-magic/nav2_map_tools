@@ -1,11 +1,11 @@
 """Re-export coordinate helpers."""
 
-from keepout_edit_api.coords.enu import (
+from control_center_api.coords.enu import (
     latlon_to_map_meters,
     map_meters_to_latlon,
     yaw_deg_to_rad,
 )
-from keepout_edit_api.coords.mercator import (
+from control_center_api.coords.mercator import (
     build_tile_url,
     lat_to_tile_y,
     latlon_to_scene,

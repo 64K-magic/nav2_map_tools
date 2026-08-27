@@ -7,7 +7,7 @@ import os
 import sqlite3
 from typing import List, Sequence
 
-from keepout_edit_api.models import Figure, Point2D
+from control_center_api.models import Figure, Point2D
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS keepout_figures (

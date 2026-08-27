@@ -60,10 +60,28 @@
     </section>
 
     <section class="panel">
+      <h2>机器人</h2>
+      <div class="row check-row">
+        <label class="check">
+          <input id="trackRobotChk" type="checkbox" checked />
+          实时跟踪
+        </label>
+        <label class="check">
+          <input id="followRobotChk" type="checkbox" />
+          地图跟随
+        </label>
+      </div>
+      <details id="robotInfoDetails" class="robot-details">
+        <summary id="robotInfoSummary">实时信息</summary>
+        <pre id="robotInfo" class="robot-info">—</pre>
+      </details>
+    </section>
+
+    <section class="panel">
       <h2>Nav2 膨胀预览</h2>
       <label class="check">
         <input id="showInflationChk" type="checkbox" checked />
-        显示膨胀范围
+        显示膨胀
       </label>
       <div class="field-grid">
         <label>inscribed
@@ -100,6 +118,7 @@
   <script src="/js/api.js"></script>
   <script src="/js/draw/shapes.js"></script>
   <script src="/js/draw/inflation.js"></script>
+  <script src="/js/robot.js"></script>
   <script src="/js/draw/tools.js"></script>
   <script src="/js/app.js"></script>
 </body>

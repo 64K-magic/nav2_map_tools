@@ -2,9 +2,9 @@ from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = 'keepout_edit_web'
+package_name = 'control_center_web'
 
-# Install entire web/ tree under share/keepout_edit_web/web
+# Install entire web/ tree under share/control_center_web/web
 web_files = []
 for root, _dirs, files in os.walk('web'):
     for name in files:

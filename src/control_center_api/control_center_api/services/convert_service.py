@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
-from keepout_edit_api.coords.enu import latlon_to_map_meters, map_meters_to_latlon, yaw_deg_to_rad
-from keepout_edit_api.models import Figure, Point2D
-from keepout_edit_api.ros.bridge import RosBridge
+from control_center_api.coords.enu import latlon_to_map_meters, map_meters_to_latlon, yaw_deg_to_rad
+from control_center_api.models import Figure, Point2D
+from control_center_api.ros.bridge import RosBridge
 
 
 class ConvertService:

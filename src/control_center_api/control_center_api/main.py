@@ -12,11 +12,11 @@ from typing import Any, Dict, Optional
 import uvicorn
 import yaml
 
-from keepout_edit_api.api import create_app
-from keepout_edit_api.db import KeepoutDatabase
-from keepout_edit_api.services import ConvertService, KeepoutService
+from control_center_api.api import create_app
+from control_center_api.db import KeepoutDatabase
+from control_center_api.services import ConvertService, KeepoutService, RobotService, parse_footprint
 
-logger = logging.getLogger('keepout_edit_api')
+logger = logging.getLogger('control_center_api')
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -37,7 +37,7 @@ def resolve_config(cli_path: Optional[str] = None) -> Dict[str, Any]:
     candidates = []
     if cli_path:
         candidates.append(Path(cli_path).expanduser())
-    share = _try_ament_share('keepout_edit_api')
+    share = _try_ament_share('control_center_api')
     if share is not None:
         candidates.append(share / 'config' / 'default.yaml')
     # Package / source-tree config
@@ -50,13 +50,13 @@ def resolve_config(cli_path: Optional[str] = None) -> Dict[str, Any]:
 
 
 def resolve_web_root() -> Optional[Path]:
-    share = _try_ament_share('keepout_edit_web')
+    share = _try_ament_share('control_center_web')
     if share is not None:
         web = share / 'web'
         if web.is_dir():
             return web
-    # Source-tree sibling: .../src/keepout_edit_web/web
-    sibling = Path(__file__).resolve().parents[2] / 'keepout_edit_web' / 'web'
+    # Source-tree sibling: .../src/control_center_web/web
+    sibling = Path(__file__).resolve().parents[2] / 'control_center_web' / 'web'
     if sibling.is_dir():
         return sibling
     return None
@@ -68,10 +68,10 @@ def _start_ros_bridge(ros_cfg: Dict[str, Any], ros_args: list):
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
 
-    from keepout_edit_api.ros import RosBridge
+    from control_center_api.ros import RosBridge
 
     rclpy.init(args=ros_args)
-    node = Node('keepout_edit_api')
+    node = Node('control_center_api')
     bridge = RosBridge(
         node,
         from_ll_service=ros_cfg.get('from_ll_service', '/fromLL'),
@@ -82,6 +82,7 @@ def _start_ros_bridge(ros_cfg: Dict[str, Any], ros_args: list):
             'keepout_refresh_topic', '/global_costmap/keepout_refresh'
         ),
         keepout_refresh_topics=ros_cfg.get('keepout_refresh_topics'),
+        odom_topic=ros_cfg.get('odom_topic', 'odom'),
     )
     executor = MultiThreadedExecutor()
     executor.add_node(node)
@@ -92,7 +93,7 @@ def _start_ros_bridge(ros_cfg: Dict[str, Any], ros_args: list):
 
 def main(argv: Optional[list] = None) -> None:
     parser = argparse.ArgumentParser(
-        description='Keepout Edit API (FastAPI). Default: pure Python, no ROS.'
+        description='Control Center API (FastAPI). Default: pure Python, no ROS.'
     )
     parser.add_argument('--config', type=str, default=None, help='YAML config path')
     parser.add_argument('--host', type=str, default=None)
@@ -143,14 +144,17 @@ def main(argv: Optional[list] = None) -> None:
 
     convert = ConvertService(ros=ros_bridge)
     keepout = KeepoutService(db=db, convert=convert, ros=ros_bridge)
+    robot_cfg = cfg.get('robot', {})
+    footprint = parse_footprint(robot_cfg.get('footprint'))
+    robot = RobotService(ros=ros_bridge, convert=convert, footprint=footprint)
     web_root = resolve_web_root()
     if web_root is None:
         logger.warning('Frontend web root not found; API only (no / page)')
     else:
         logger.info('Serving frontend from %s', web_root)
 
-    app = create_app(keepout, convert, config=cfg, web_root=web_root)
-    logger.info('Keepout Edit API http://%s:%s  DB=%s', host, port, db.db_path)
+    app = create_app(keepout, convert, robot_service=robot, config=cfg, web_root=web_root)
+    logger.info('Control Center API http://%s:%s  DB=%s', host, port, db.db_path)
 
     try:
         uvicorn.run(app, host=host, port=port, log_level='info')

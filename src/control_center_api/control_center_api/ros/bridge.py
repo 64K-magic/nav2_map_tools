@@ -5,10 +5,11 @@ from __future__ import annotations
 import math
 import threading
 import time
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import rclpy
 from nav2_msgs.srv import ClearEntireCostmap
+from nav_msgs.msg import Odometry
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from robot_localization.srv import FromLL, SetDatum, ToLL
@@ -34,6 +35,7 @@ class RosBridge:
         keepout_refresh_topic: str = '/global_costmap/keepout_refresh',
         keepout_refresh_topics: Optional[Sequence[str]] = None,
         clear_costmap_service: str = '/global_costmap/clear_entirely_global_costmap',
+        odom_topic: str = 'odom',
     ):
         self._node = node
         self._cb_group = ReentrantCallbackGroup()
@@ -70,17 +72,64 @@ class RosBridge:
             'keepout_refresh publishers: ' + ', '.join(topics)
         )
 
-        self._last_gps: Optional[Tuple[float, float]] = None
+        self._last_gps: Optional[Dict[str, float]] = None
         self._gps_lock = threading.Lock()
         self._gps_sub = node.create_subscription(NavSatFix, gps_topic, self._on_gps, 10)
 
+        self._last_odom: Optional[Dict[str, float]] = None
+        self._odom_lock = threading.Lock()
+        self._odom_sub = node.create_subscription(
+            Odometry, odom_topic, self._on_odom, 10, callback_group=self._cb_group
+        )
+
+    @staticmethod
+    def _stamp_sec(stamp) -> float:
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+    @staticmethod
+    def _quat_to_yaw(x: float, y: float, z: float, w: float) -> float:
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        return math.atan2(siny_cosp, cosy_cosp)
+
     def _on_gps(self, msg: NavSatFix) -> None:
         with self._gps_lock:
-            self._last_gps = (msg.latitude, msg.longitude)
+            self._last_gps = {
+                'lat': float(msg.latitude),
+                'lon': float(msg.longitude),
+                'alt': float(msg.altitude),
+                'status': int(msg.status.status),
+                'stamp': self._stamp_sec(msg.header.stamp),
+            }
+
+    def _on_odom(self, msg: Odometry) -> None:
+        q = msg.pose.pose.orientation
+        p = msg.pose.pose.position
+        t = msg.twist.twist.linear
+        yaw = self._quat_to_yaw(q.x, q.y, q.z, q.w)
+        with self._odom_lock:
+            self._last_odom = {
+                'x': float(p.x),
+                'y': float(p.y),
+                'yaw_rad': yaw,
+                'vx': float(t.x),
+                'vy': float(t.y),
+                'stamp': self._stamp_sec(msg.header.stamp),
+            }
 
     def get_last_gps(self) -> Optional[Tuple[float, float]]:
         with self._gps_lock:
-            return self._last_gps
+            if not self._last_gps:
+                return None
+            return (self._last_gps['lat'], self._last_gps['lon'])
+
+    def get_gps_state(self) -> Optional[Dict[str, float]]:
+        with self._gps_lock:
+            return dict(self._last_gps) if self._last_gps else None
+
+    def get_odom_state(self) -> Optional[Dict[str, float]]:
+        with self._odom_lock:
+            return dict(self._last_odom) if self._last_odom else None
 
     def publish_keepout_map_switch(self, map_name: str, clear_costmap: bool = True) -> None:
         """Tell filter_keepout to reload keepouts for map_name, then clear costmap."""

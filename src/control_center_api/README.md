@@ -1,8 +1,8 @@
-# keepout_edit_api
+# control_center_api
 
 Python FastAPI：瓦片图禁行区（线 / 矩形 / 多边形 / 圆）经坐标转换写入与 Nav2 `filter_keepout` 相同的 SQLite。
 
-前端包：`keepout_edit_web`（由本服务在 `/` 托管）。
+前端包：`control_center_web`（由本服务在 `/` 托管）。
 
 - **默认转换**：`robot_localization` 的 `/fromLL`、`/toLL`（需 `--ros`）
 - **备选**：本地 ENU（请求里 `use_ros: false`，Origin 须与导航 datum 一致）
@@ -11,7 +11,7 @@ Python FastAPI：瓦片图禁行区（线 / 矩形 / 多边形 / 圆）经坐标
 ## 分层
 
 ```
-keepout_edit_api/
+control_center_api/
 ├── models.py                 # Figure / Point2D
 ├── db/keepout_db.py          # SQLite CRUD（按 map_name）
 ├── coords/                   # ENU + Mercator
@@ -34,7 +34,7 @@ keepout_edit_api/
 ## 启动
 
 ```bash
-cd ~/gps_filter_ws/src/keepout_edit_api
+cd ~/gps_filter_ws/src/control_center_api
 source /opt/ros/humble/setup.bash   # --ros 时需要
 
 pip3 install fastapi uvicorn pydantic pyyaml   # 首次

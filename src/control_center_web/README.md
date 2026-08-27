@@ -1,6 +1,6 @@
-# keepout_edit_web
+# control_center_web
 
-RTK 禁行区 **前端页面包**：在 XYZ 瓦片地图上绘制线 / 矩形 / 不规则多边形 / 圆，通过 `keepout_edit_api` 转换坐标系并写入 SQLite。
+RTK 禁行区 **前端页面包**：在 XYZ 瓦片地图上绘制线 / 矩形 / 不规则多边形 / 圆，通过 `control_center_api` 转换坐标系并写入 SQLite。
 
 ## 目录
 
@@ -16,14 +16,14 @@ web/
         └── tools.js     # 绘制交互
 ```
 
-由 `keepout_edit_api` 在 `/` 托管静态资源（安装后从 `share/keepout_edit_web/web` 读取）。
+由 `control_center_api` 在 `/` 托管静态资源（安装后从 `share/control_center_web/web` 读取）。
 
 ## 使用
 
 1. 启动 API（需 `--ros`，默认 `/fromLL`）：
 
 ```bash
-cd ~/gps_filter_ws/src/keepout_edit_api
+cd ~/gps_filter_ws/src/control_center_api
 source /opt/ros/humble/setup.bash
 python3 scripts/run_api.py --ros
 ```

@@ -73,14 +73,40 @@
   let tileLayer;
   let drawer;
   let gpsMarker;
+  let robotTracker;
+
+  async function initRobotTracking(cfg, health) {
+    robotTracker = new RobotTracker(map, origin);
+    const robotCfg = (cfg && cfg.robot) || {};
+    if (robotCfg.track_poll_hz) {
+      robotTracker.setPollHz(robotCfg.track_poll_hz);
+    }
+
+    const trackChk = $('trackRobotChk');
+    const followChk = $('followRobotChk');
+
+    trackChk.addEventListener('change', () => {
+      if (trackChk.checked) robotTracker.start();
+      else robotTracker.stop();
+    });
+    followChk.addEventListener('change', () => {
+      robotTracker.setFollow(followChk.checked);
+    });
+
+    if (health && health.ros_enabled && trackChk.checked) {
+      robotTracker.start();
+    }
+  }
 
   async function init() {
     let cfg = {};
+    let health = null;
     try {
       cfg = await KeepoutApi.config();
-      setStatus('已连接 API');
+      health = await KeepoutApi.health();
+      setStatus('已连接 API' + (health.ros_enabled ? ' · ROS' : ''));
     } catch (e) {
-      setStatus('API 未就绪: ' + e.message + '（可先启动 keepout_edit_api）');
+      setStatus('API 未就绪: ' + e.message + '（可先启动 control_center_api）');
     }
 
     const originCfg = cfg.default_origin || {};
@@ -115,6 +141,7 @@
     refreshFigureList();
     applyInflationFromUi();
     await refreshMapNameOptions();
+    await initRobotTracking(cfg, health);
   }
 
   function applyInflationFromUi() {
@@ -267,6 +294,7 @@
         }).addTo(map);
         map.setView([g.lat, g.lon]);
         setStatus(`GPS ${g.lat.toFixed(6)}, ${g.lon.toFixed(6)}`);
+        if (robotTracker) robotTracker.updateDisplay({ available: true, gps_ok: true, lat: g.lat, lon: g.lon });
       } catch (e) {
         setStatus('GPS: ' + e.message);
       }

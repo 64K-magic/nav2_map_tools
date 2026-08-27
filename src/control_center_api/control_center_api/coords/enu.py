@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Tuple
 
-from keepout_edit_api.models import Point2D
+from control_center_api.models import Point2D
 
 WGS84_A = 6378137.0
 

@@ -1,6 +1,6 @@
-"""python -m keepout_edit_api"""
+"""python -m control_center_api"""
 
-from keepout_edit_api.main import main
+from control_center_api.main import main
 
 if __name__ == '__main__':
     main()

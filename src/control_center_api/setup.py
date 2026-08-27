@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = 'keepout_edit_api'
+package_name = 'control_center_api'
 
 setup(
     name=package_name,
@@ -28,7 +28,7 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'keepout_edit_api = keepout_edit_api.main:main',
+            'control_center_api = control_center_api.main:main',
         ],
     },
 )

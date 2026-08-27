@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from keepout_edit_api.api.schemas import (
+from control_center_api.api.schemas import (
     ApiMessage,
     BatchLlToMapRequest,
     FigureMapModel,
@@ -22,8 +22,8 @@ from keepout_edit_api.api.schemas import (
     SaveWgs84Request,
     SetDatumRequest,
 )
-from keepout_edit_api.models import Figure, Point2D
-from keepout_edit_api.services import ConvertService, KeepoutService
+from control_center_api.models import Figure, Point2D
+from control_center_api.services import ConvertService, KeepoutService, RobotService
 
 
 def _figure_to_map_model(f: Figure) -> FigureMapModel:
@@ -55,11 +55,12 @@ def _map_model_to_figure(m: FigureMapModel, map_name: str) -> Figure:
 def create_app(
     keepout_service: KeepoutService,
     convert_service: ConvertService,
+    robot_service: Optional[RobotService] = None,
     config: Optional[Dict[str, Any]] = None,
     web_root: Optional[Path] = None,
 ) -> FastAPI:
     app = FastAPI(
-        title='Keepout Edit API',
+        title='Control Center API',
         version='0.1.0',
         description='RTK tile-map keepout draw → map meters → SQLite for Nav2 filter_keepout',
     )
@@ -72,25 +73,35 @@ def create_app(
     )
     app.state.keepout = keepout_service
     app.state.convert = convert_service
+    app.state.robot = robot_service
     app.state.config = config or {}
 
     @app.get('/api/health')
     def health():
         ros = keepout_service.ros
+        gps = ros.get_last_gps() if ros else None
+        odom = ros.get_odom_state() if ros else None
         return {
             'ok': True,
             'db_path': keepout_service.db.db_path,
             'navsat_ready': bool(ros and ros.navsat_ready()),
-            'gps': (ros.get_last_gps() if ros else None),
+            'ros_enabled': ros is not None,
+            'gps': gps,
+            'odom_ok': bool(odom),
         }
 
     @app.get('/api/config')
     def get_config():
         cfg = app.state.config
+        robot_cfg = cfg.get('robot', {})
         return {
             'default_origin': cfg.get('default_origin', {}),
             'tile': cfg.get('tile', {}),
             'db_path': keepout_service.db.db_path,
+            'robot': {
+                'footprint': robot_service.footprint if robot_service else [],
+                'track_poll_hz': robot_cfg.get('track_poll_hz', 5),
+            },
         }
 
     @app.get('/api/maps')
@@ -236,6 +247,22 @@ def create_app(
             return {'lat': None, 'lon': None}
         return {'lat': g[0], 'lon': g[1]}
 
+    @app.get('/api/robot/pose')
+    def robot_pose(
+        lat: float,
+        lon: float,
+        yaw_deg: float = 0.0,
+        use_ros: bool = True,
+    ):
+        if robot_service is None:
+            return {
+                'available': False,
+                'gps_ok': False,
+                'odom_ok': False,
+                'message': 'ROS bridge not available (start API with --ros)',
+            }
+        return robot_service.get_pose(lat, lon, yaw_deg, use_ros=use_ros)
+
     if web_root and web_root.is_dir():
         # colcon --symlink-install uses symlinks; Starlette blocks them unless enabled.
         static_kw = {'follow_symlink': True}
@@ -252,6 +279,6 @@ def create_app(
         def index_page():
             if index.is_file():
                 return FileResponse(str(index))
-            raise HTTPException(404, 'Frontend not installed (keepout_edit_web)')
+            raise HTTPException(404, 'Frontend not installed (control_center_web)')
 
     return app

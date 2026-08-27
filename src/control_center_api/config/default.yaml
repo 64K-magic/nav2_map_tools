@@ -1,4 +1,4 @@
-# keepout_edit_api defaults (aligned with map_coordinates_edit_gui)
+# control_center_api defaults (aligned with map_coordinates_edit_gui)
 
 db_path: "~/gps_filter_ws/data/keepout.db"
 
@@ -27,6 +27,12 @@ ros:
   gps_topic: "/gps/fix"
   # Costmap plugin remaps relative "keepout_refresh" under the costmap node:
   keepout_refresh_topic: "/global_costmap/keepout_refresh"
+  odom_topic: "odom"
   # Optional extras (list), e.g. if local_costmap also has keepout_filter:
   # keepout_refresh_topics:
   #   - "/local_costmap/keepout_refresh"
+
+# Robot footprint in base_link (meters), same as Nav2 costmap footprint.
+robot:
+  footprint: "[[-0.67, -0.35], [-0.67, 0.35], [0.87, 0.35], [0.87, -0.35] ]"
+  track_poll_hz: 5

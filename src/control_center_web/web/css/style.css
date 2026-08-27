@@ -69,6 +69,47 @@ body {
   line-height: 1.2;
 }
 
+.robot-info {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  font-size: 0.68rem;
+  line-height: 1.45;
+  font-family: "IBM Plex Mono", "Noto Sans Mono", ui-monospace, monospace;
+  background: #121820;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: #c5d4e3;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.robot-details {
+  margin-top: 5px;
+  font-size: 0.7rem;
+}
+
+.robot-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+  list-style: none;
+  padding: 2px 0;
+}
+
+.robot-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.robot-details > summary::before {
+  content: '▸ ';
+  display: inline-block;
+  width: 0.85em;
+}
+
+.robot-details[open] > summary::before {
+  content: '▾ ';
+}
+
 /* Compact 2-column field rows */
 .field-grid {
   display: grid;
@@ -186,6 +227,16 @@ select {
 }
 
 .check input { width: auto; margin: 0; flex-shrink: 0; }
+
+.check-row {
+  align-items: center;
+}
+
+.check-row .check {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
 
 input[type="number"]::-webkit-inner-spin-button {
   opacity: 1;
